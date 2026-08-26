@@ -50,7 +50,8 @@ main    → ci → build & push в ghcr.io/bx-shef/get-task-from-b24:latest
    (там уже лежит `smoke.sh` — проверка обработчика на безопасность и живучесть);
 2. цель в `Makefile`, тянущая скрипт из репозитория по тому же `REF`, что и `self-update`
    (иначе `Makefile` обновится из одной ветки, а скрипты приедут из другой);
-3. строка `## описание` **вплотную** над целью — иначе она не попадёт в `make help`;
+3. строка `## описание` над целью — между ними могут идти обычные `#`-комментарии,
+   `make help` запоминает последнее описание и печатает его у ближайшей цели;
 4. владельцу — `make self-update && make <цель>`.
 
 **`make self-update` заводим первым.** `Makefile` кладётся на сервер один раз при
@@ -88,6 +89,8 @@ B24_TARGET_WEBHOOK_URL=https://мой.bitrix24.ru/rest/1/<токен вебху�
 B24_TARGET_RESPONSIBLE_ID=1
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
+# Раскомментировать после «Разовой настройки нашего портала» ниже:
+#B24_TARGET_UF_SOURCE_TASK=UF_SOURCE_TASK_ID
 B24_PORTAL_01=client-one.bitrix24.ru,17,local.xxxxxxxx,xxxxxxxx
 ENV
 echo "B24_TOKEN_ENC_KEY=$(openssl rand -hex 32)" >> .env
@@ -110,6 +113,7 @@ make doctor
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | задачи переносятся, но никто об этом не узнаёт. ⚠ Обе или ни одной — половина настроек роняет старт намеренно |
 | `PUBLIC_BASE_URL` | указан с ошибкой → подписка `event.bind` уедет на неверный адрес: приложение установится, а события пойдут в никуда |
 | `B24_TARGET_RESPONSIBLE_ID` | задачи создаются на не того сотрудника — они есть, но их никто не видит |
+| `B24_TARGET_UF_SOURCE_TASK` | не задана → ID задачи клиента в задачу не пишется; задана до заведения поля → каждый перенос шлёт порталу несуществующий ключ |
 
 ⚠ **`B24_TOKEN_ENC_KEY` — не «просто ключ».** Потеряли или сменили — все 20–30 порталов
 придётся переустанавливать у клиентов. Он идёт в бэкап вместе с базой и отдельно от неё.
@@ -119,24 +123,49 @@ make doctor
 Поле, куда сервис пишет ID задачи клиента, заводится один раз вебхуком:
 
 ```bash
-curl -s -X POST "$B24_TARGET_WEBHOOK_URL/task.item.userfield.add.json" \
+cd /home/bitrix/get-task-from-b24
+set -a; . ./.env; set +a
+curl -s -X POST "${B24_TARGET_WEBHOOK_URL%/}/task.item.userfield.add.json" \
   -H 'content-type: application/json' \
-  -d '{"PARAMS":{"FIELD_NAME":"SOURCE_TASK_ID","USER_TYPE_ID":"double","MULTIPLE":"N",
-       "EDIT_FORM_LABEL":{"ru":"ID задачи у клиента"},
-       "XML_ID":"GET_TASK_FROM_B24_SOURCE_ID"}}'
+  -d '{"PARAMS":{"FIELD_NAME":"SOURCE_TASK_ID","USER_TYPE_ID":"double","MULTIPLE":"N","EDIT_FORM_LABEL":{"ru":"ID задачи у клиента"},"XML_ID":"GET_TASK_FROM_B24_SOURCE_ID"}}'
 ```
 
-⚠ Префикс `UF_` Битрикс24 добавляет сам — итоговый код поля `UF_SOURCE_TASK_ID`, его и
-кладём в `B24_TARGET_UF_SOURCE_TASK`. Тип `double`, а не `string`: по полю фильтруют,
-и число сравнивается числом.
+В ответе придёт `{"result":<id поля>}`. После этого — раскомментировать в `.env`:
 
-✅ Заведено на `bel.bitrix24.by` 2026-08-26 (поле `305`), проверено записью и чтением.
+```
+B24_TARGET_UF_SOURCE_TASK=UF_SOURCE_TASK_ID
+```
+
+и применить: `make prod-redeploy`.
+
+⚠ **Второй раз не запускать.** Повторный вызов заведёт ВТОРОЕ поле с кодом
+`UF_SOURCE_TASK_ID1`, а переменная будет указывать на первое — сервис продолжит писать
+не туда, куда смотрит человек. Проверить, что уже заведено:
+`curl -s -X POST "${B24_TARGET_WEBHOOK_URL%/}/task.item.userfield.getlist.json" -d '{}'`.
+
+⚠ **Адрес вебхука — секрет**, а `set -a; . ./.env` кладёт его в окружение сессии, но не
+в history. Не подставляйте его в командную строку руками.
+
+⚠ Префикс `UF_` Битрикс24 добавляет сам — итоговый код поля `UF_SOURCE_TASK_ID`, его и
+кладём в `B24_TARGET_UF_SOURCE_TASK`. Тип `double` — единственный числовой из четырёх,
+которые принимает метод (`string`, `double`, `datetime`, `boolean`).
+
+⚠ **Поле пригодно для чтения человеком, но не для поиска.** Замерено на боевом портале:
+фильтр `tasks.task.list` по этому полю находит ноль задач при существующем значении, а
+в camelCase молча возвращает всё подряд. Не стройте на нём сверку — для этого есть
+журнал `transfers` (`make transfers`).
+
+✅ Заведено на нашем портале 2026-08-26, проверено записью и чтением.
 
 ## Подключение и отключение клиентов
 
 Реестр порталов правится целями `make`, а не руками: строка длинная, ошибка в ней тихая.
 
+⚠ **Сперва `make self-update`.** `Makefile` кладётся на сервер один раз и сам себя не
+обновляет, поэтому цели `client-*` появятся там только после него.
+
 ```bash
+make self-update
 DOMAIN=portal.example.by RESPONSIBLE=17 CLIENT_ID=local.xxx CLIENT_SECRET=yyy GROUP=0 make client-add
 make clients          # кто подключён (секреты не печатаются)
 DOMAIN=portal.example.by make client-disable   # обратимо: строка комментируется

@@ -15,6 +15,7 @@ set -uo pipefail
 BASE="${BASE:-http://localhost:3000}"
 DOMAIN="${DOMAIN:-client.bitrix24.ru}"
 fails=0
+skipped=0
 
 # имя, ожидаемый код, ожидаемая подстрока тела (или -), фактический «код|тело»
 check() {
@@ -49,6 +50,7 @@ if [[ "${registry_probe#*|}" == *'"ignored":"portal"'* ]]; then
   echo "    «не наш» раньше, чем сверяет токен. Запустите с DOMAIN из B24_PORTAL_* в .env."
   echo
   SKIP_REGISTRY_CHECKS=1
+  skipped=$((skipped + 1))
 fi
 
 # ⚠ Токен установки не подтверждён вызовом на настоящий портал.
@@ -93,6 +95,14 @@ else
 fi
 
 echo
+# ⚠ Пропуск — НЕ успех. Раньше пропущенная проверка подлинности никак не отражалась
+# в итоге, и прогон выглядел зелёным, хотя самая ценная проверка не выполнялась.
+if [ "$skipped" -gt 0 ]; then
+  echo "Провалов: $fails, ПРОПУЩЕНО проверок: $skipped (домен не из реестра)."
+  echo "Пропуск не считается успехом — перезапустите с DOMAIN из B24_PORTAL_* в .env."
+  exit 1
+fi
+
 if [ "$fails" -eq 0 ]; then
   echo "Всё чисто."
 else

@@ -6,3 +6,5 @@ coverage/
 .env.*
 !.env.example
 *.log
+backup-*.sql.gz
+*.bak-*

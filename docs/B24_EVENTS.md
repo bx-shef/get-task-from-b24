@@ -112,4 +112,5 @@
 - [Обзор событий задач](https://apidocs.bitrix24.ru/api-reference/tasks/events-tasks/index.html)
 - [`ONTASKADD`](https://apidocs.bitrix24.ru/api-reference/tasks/events-tasks/on-task-add.html)
 - [`tasks.task.add`](https://apidocs.bitrix24.ru/api-reference/tasks/tasks-task-add.html)
+- [`task.item.userfield.add`](https://apidocs.bitrix24.ru/api-reference/tasks/user-field/task-item-userfield-add.html)
 - [Обработчик событий](https://apidocs.bitrix24.ru/api-reference/events/index.html)

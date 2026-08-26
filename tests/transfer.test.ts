@@ -141,3 +141,28 @@ describe('transferTask', () => {
     await expect(transferTask(555, deps, settings)).rejects.toThrow('портал занят')
   })
 })
+
+describe('швы: что из настроек доезжает до запроса', () => {
+  // ⚠ Ревью показало мутацией: проброс группы можно было выкинуть, и все тесты
+  // оставались зелёными. Группа переставала проставляться у ВСЕХ клиентов молча —
+  // портал неверный или отсутствующий GROUP_ID не оспаривает.
+  it('группа клиента доезжает до создаваемой задачи', async () => {
+    const deps = makeDeps()
+    await transferTask(555, deps, { ...settings, portal: { ...settings.portal, groupId: 42 } })
+    expect(deps.createTask).toHaveBeenCalledWith(expect.objectContaining({ GROUP_ID: 42 }))
+  })
+
+  it('без группы поля в запросе нет', async () => {
+    const deps = makeDeps()
+    await transferTask(555, deps, settings)
+    expect(deps.createTask).toHaveBeenCalledWith(expect.not.objectContaining({ GROUP_ID: expect.anything() }))
+  })
+
+  // ⚠ Тот же шов: настройка валидируется на старте и покрыта юнитами маппера, но
+  // могла не доезжать до запроса вовсе.
+  it('код поля с ID задачи клиента доезжает до создаваемой задачи', async () => {
+    const deps = makeDeps()
+    await transferTask(555, deps, { ...settings, sourceTaskField: 'UF_SOURCE_TASK_ID' })
+    expect(deps.createTask).toHaveBeenCalledWith(expect.objectContaining({ UF_SOURCE_TASK_ID: 555 }))
+  })
+})

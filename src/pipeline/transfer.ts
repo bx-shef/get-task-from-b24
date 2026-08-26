@@ -99,7 +99,7 @@ export async function transferTask(
 
     created = await deps.createTask(fields)
     await deps.markDone(domain, taskId, created)
-    deps.log('created', { domain, taskId, targetTaskId: created })
+    deps.log('created', { domain, taskId, targetTaskId: created, groupId: fields.GROUP_ID ?? 0 })
 
     // ⚠ Уведомление ставится в очередь отдельным шагом и НЕ роняет перенос: задача уже
     // создана, а повтор задания сходил бы в портал заново и завершился «дублем» —

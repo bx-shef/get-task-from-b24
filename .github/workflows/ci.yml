@@ -35,9 +35,14 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
 
-    # ⚠ Настоящий Postgres, а не мок. Контрактные тесты журнала переносов проверяют
-    # поведение `on conflict` — то есть саму базу; ровно на этом месте панель ревью
-    # нашла два дефекта, которых юниты с заглушками не видели в принципе.
+    # ⚠ Настоящие Postgres и Redis, а не моки. Контрактные тесты проверяют поведение
+    # самих хранилищ: журнал переносов держится на `on conflict` в базе, а очереди —
+    # на блокирующих командах Redis. Ровно на этих местах панель ревью нашла дефекты,
+    # которых юниты с заглушками не видели в принципе.
+    #
+    # ⚠ Redis добавлен вместе с контрактным тестом очередей: без сервиса тест не
+    # падает быстро, а висит на переподключении до таймаута — то есть красный CI
+    # выглядел бы как зависший, а не как «нет зависимости».
     services:
       postgres:
         image: postgres:17-alpine
@@ -53,8 +58,19 @@ jobs:
           --health-timeout 5s
           --health-retries 10
 
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     env:
       DATABASE_URL: postgres://app:app@localhost:5432/app
+      REDIS_URL: redis://localhost:6379
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
