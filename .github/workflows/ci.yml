@@ -1,20 +1,19 @@
-name: CI
+name: CI/CD
 
-# Единственный обязательный статус-чек репозитория.
+# Один конвейер, чтобы деплой гейтился зелёным CI:
+#   PR   → ci + docker-build (проверяем, что образ собирается; в реестр не пушим)
+#   main → ci → deploy (сборка + push в GHCR; Watchtower подхватит за ~5 минут)
 #
-# ⚠ Имя джобы `ci` — часть защиты `main`: ruleset `protect-main` требует статус-чек ПО ИМЕНИ.
-# Переименуешь джобу — GitHub перестанет требовать что-либо и не сообщит об этом.
-# См. docs/REPO_SETUP_CHECKLIST.md и docs/PROCESS.md.
+# ⚠ Имя джобы `ci` — это required status check из ruleset `protect-main`
+# (docs/REPO_SETUP_CHECKLIST.md). Переименуешь — GitHub перестанет требовать что-либо
+# и не сообщит об этом.
 #
-# ⚠ `continue-on-error` запрещён во ВСЕХ воркфлоу: он делает шаг красным, а джобу зелёной,
-# то есть гасит проверку молча. Нужно исключение — сперва обоснование в docs/PROCESS.md.
+# ⚠ `continue-on-error` запрещён во ВСЕХ воркфлоу: он делает шаг красным, а джобу
+# зелёной, то есть гасит проверку молча (docs/PROCESS.md).
 #
-# ⚠ Сторонние actions пиним по полному SHA коммита (комментарий `# vX.Y.Z` читает Dependabot):
-# изменяемый тег может быть перезаписан владельцем действия и выполнит чужой код на раннере
-# с GITHUB_TOKEN.
-#
-# ⬜ Каркас: стек не зафиксирован, поэтому шагов сборки пока нет. Появятся команды
-# (CLAUDE.md → «Команды») — добавляются сюда: install → lint → test → typecheck → build.
+# ⚠ Сторонние actions пиним по полному SHA коммита: изменяемый тег может быть
+# перезаписан владельцем действия и выполнит чужой код на раннере с GITHUB_TOKEN.
+# Комментарий `# vX.Y.Z` рядом с SHA читает Dependabot — пиннинг не требует ухода.
 on:
   push:
     branches: [main]
@@ -24,7 +23,7 @@ on:
 
 concurrency:
   group: ci-${{ github.ref }}
-  # Отменяем только устаревшие прогоны PR; прогон на `main` не прерываем.
+  # Отменяем только устаревшие прогоны PR; выкат с `main` не прерываем на середине push в GHCR.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -34,14 +33,37 @@ jobs:
   ci:
     name: ci
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Единственная содержательная проверка каркаса: каждый .md в корне и в docs/
-      # несёт штамп `> Last reviewed: YYYY-MM-DD` (конвенция из CLAUDE.md).
-      # Когда появится тест-раннер, проверка переезжает в тесты и удаляется отсюда.
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        # Версия pnpm читается из поля packageManager в package.json.
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test
+
+      - name: Type check
+        run: pnpm typecheck
+
+      - name: Build
+        run: pnpm build
+
+      # Конвенция из CLAUDE.md: каждый .md в корне и в docs/ несёт штамп ревью.
+      # ⚠ Проверка живёт в CI, а не только в голове: расхождение прозы с кодом
+      # обнаруживается случайно и стоит дорого.
       - name: Review stamps in docs
         run: |
           set -euo pipefail
@@ -54,3 +76,72 @@ jobs:
             fi
           done
           exit $missing
+
+  docker-build:
+    name: docker-build
+    # Проверяем сборку прод-образа на каждом PR, в реестр не пушим.
+    # ⚠ Не делаем required-check'ом: провал сборки образа не должен блокировать мерж
+    # доменного кода, а красный образ на main безвреден — Watchtower крутит прежний.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          push: false
+          # ⚠ Кэш только на чтение: запись из refs/pull/N/merge читаема лишь этому PR,
+          # но съедает общий 10-гигабайтный бюджет и вытесняет кэш main.
+          cache-from: type=gha
+          tags: get-task-from-b24:ci
+
+  deploy:
+    name: Build & Push to GHCR
+    needs: ci
+    # ⚠ Гейт: красный CI не пускает образ в реестр, а значит и на сервер.
+    if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    permissions:
+      contents: read
+      packages: write # нужно для push в ghcr.io
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }} # встроенный, отдельный секрет не нужен
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=sha-
+
+      - name: Build and push
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

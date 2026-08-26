@@ -3,7 +3,7 @@ import { loadConfig, targetDomainFromWebhook, type Env } from '../src/config.js'
 
 const base: Env = {
   PUBLIC_BASE_URL: 'https://get-task-from-b24.bx-shef.by/',
-  B24_PORTALS: JSON.stringify([{ domain: 'client.bitrix24.ru', responsibleId: 17, clientId: 'a', clientSecret: 'b' }]),
+  B24_PORTAL_01: 'client.bitrix24.ru,17,local.a,secret-a',
   B24_TARGET_WEBHOOK_URL: 'https://my.bitrix24.ru/rest/1/token/',
   B24_TARGET_RESPONSIBLE_ID: '1',
   DATABASE_URL: 'postgres://app:app@localhost:5432/app',

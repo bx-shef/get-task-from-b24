@@ -1,8 +1,20 @@
 version: 2
 updates:
+  # --- Зависимости приложения (npm / pnpm) ----------------------------------
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    versioning-strategy: increase
+    groups:
+      # Все dev-зависимости — одним PR.
+      dev-deps:
+        dependency-type: development
+
   # --- Версии GitHub Actions в CI -------------------------------------------
-  # Пины по SHA в воркфлоу поддерживаются автоматически: Dependabot читает
-  # комментарий `# vX.Y.Z` рядом с SHA.
+  # Пины по SHA поддерживаются автоматически: Dependabot читает комментарий `# vX.Y.Z`.
   - package-ecosystem: github-actions
     directory: /
     schedule:
@@ -13,21 +25,19 @@ updates:
         patterns:
           - "*"
 
-  # ⬜ Включить вместе со стеком (сейчас манифестов в репозитории нет, и Dependabot
-  # будет ругаться на отсутствующий файл):
-  #
-  # - package-ecosystem: npm
-  #   directory: /
-  #   schedule: { interval: weekly, day: monday }
-  #   open-pull-requests-limit: 5
-  #   versioning-strategy: increase
-  #   groups:
-  #     dev-deps:
-  #       dependency-type: development
-  #
-  # - package-ecosystem: docker
-  #   directory: /
-  #   schedule: { interval: weekly, day: monday }
-  #   groups:
-  #     docker:
-  #       patterns: ["*"]
+  # --- Базовые образы Docker ------------------------------------------------
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      docker:
+        patterns:
+          - "*"
+    # ⚠ В node:25+ из официальных образов убран corepack (`RUN corepack enable` →
+    # exit 127). Остаёмся на линии 22 LTS; мажор поднимаем руками, когда будет чем
+    # заменить corepack. Минор и патч 22-й линии проезжают штатно.
+    ignore:
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]

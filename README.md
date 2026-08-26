@@ -5,7 +5,7 @@
 Мелочь, которая принимает вебхуки о создании задач в одном Битрикс24 и заводит
 такую же задачу в другом Битрикс24.
 
-> **Статус:** каркас, задача поставлена, код не начат. Актуальный срез —
+> **Статус:** 🧪 код собран и под тестами; между настоящими порталами не гонялся. Срез —
 > [`docs/project-map.md`](docs/project-map.md), что и как переносим —
 > [`docs/PROCESSING.md`](docs/PROCESSING.md), процесс разработки —
 > [`docs/PROCESS.md`](docs/PROCESS.md).
@@ -32,8 +32,25 @@
 
 ## Быстрый старт
 
-⬜ **Дозаполняется** после выбора стека (см. [`CLAUDE.md`](./CLAUDE.md) → «Стек»).
-Форма раздела: команды установки, запуск дев-сервера, чем проверить, что живо.
+```bash
+corepack enable && pnpm install
+
+cp .env.example .env
+# дописать ключ шифрования токенов и хотя бы один портал клиента:
+echo "B24_TOKEN_ENC_KEY=$(openssl rand -hex 32)" >> .env
+
+docker compose up -d db redis   # локальные Postgres и Redis
+pnpm dev                        # http://localhost:3000
+```
+
+Проверка: `curl localhost:3000/health` → `{"status":"ok","checks":{"db":true,"redis":true}}`
+(`degraded` = не отвечает база или Redis; ⚠ мёртвый Redis особенно опасен — сервис
+принимает события и теряет их).
+
+## Требования
+
+- **Node.js 22 LTS** и **pnpm** (через corepack, версия закреплена в `packageManager`)
+- **Docker** — для локальных Postgres и Redis
 
 ## Документация
 
@@ -55,7 +72,8 @@
   `main` — в [`docs/REPO_SETUP_CHECKLIST.md`](docs/REPO_SETUP_CHECKLIST.md).
 - Каждый PR проходит **панель из 5 проверяющих**, замечания устраняются до мержа —
   [`docs/PROCESS.md`](docs/PROCESS.md).
-- Инструкции для AI-агентов и детали архитектуры — в [`CLAUDE.md`](./CLAUDE.md).
+- Перед пушем — зелёный `pnpm check` (линт + типы + тесты); это же гоняет CI.
+- Инструкции для AI-агентов и карта модулей — в [`CLAUDE.md`](./CLAUDE.md).
 
 ## Лицензия
 

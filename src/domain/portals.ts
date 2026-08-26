@@ -1,29 +1,37 @@
-import { z } from 'zod'
-
 /**
- * Реестр порталов клиентов: читается из переменной окружения B24_PORTALS.
+ * Реестр порталов клиентов: читается из переменных окружения `B24_PORTAL_*`.
+ *
+ * Формат одной строки: `домен,id исполнителя,client_id,client_secret`
+ *
+ * ⚠ Формат выбран НЕ из вкуса, а замерен на живом прогоне. JSON-массив одной
+ * переменной разваливается о `source .env` — шелл съедает кавычки; разделитель `|`
+ * разваливается там же — шелл видит конвейер («17: command not found»). Запятая
+ * проходит и через шелл, и через `env_file` docker compose, а в доменах, числовых id
+ * и ключах Битрикс24 не встречается. Плюс порталов 20–30: строка на портал правится
+ * по одной, в том числе с телефона, а длинный JSON — только целиком и вслепую.
  *
  * ⚠ Здесь живёт только НЕИЗМЕНЯЕМОЕ: домен, id «особого» исполнителя и ключи
  * локального приложения. Живые OAuth-токены продлеваются в рантайме и хранятся в БД —
  * окружение не переписывается само (docs/CLIENT_APP.md).
  */
-const PortalSchema = z.object({
-  domain: z.string().min(1),
-  responsibleId: z.coerce.number().int().positive(),
-  clientId: z.string().min(1),
-  clientSecret: z.string().min(1),
-})
 
-export type PortalConfig = z.infer<typeof PortalSchema> & { domain: string }
+export interface PortalConfig {
+  domain: string
+  responsibleId: number
+  clientId: string
+  clientSecret: string
+}
+
+export const PORTAL_ENV_PREFIX = 'B24_PORTAL_'
 
 /**
  * Приводит домен к сравнимому виду: без схемы, без пути, без хвостового слэша,
  * в нижнем регистре.
  *
- * ⚠ Сравнение доменов посимвольное, а приходят они из разных источников: из env их
- * пишет человек, из события — портал. «https://Client.bitrix24.ru/» и
- * «client.bitrix24.ru» это один портал, и без нормализации второй просто не нашёлся бы
- * в списке — то есть событие было бы отброшено как «портал не поддерживается».
+ * ⚠ Сравнение доменов посимвольное, а приходят они из разных источников: в окружение
+ * их пишет человек, в событие — портал. «https://Client.bitrix24.ru/» и
+ * «client.bitrix24.ru» это один портал, и без нормализации второй не нашёлся бы
+ * в реестре — то есть событие отбрасывалось бы как «портал не поддерживается».
  */
 export function normalizeDomain(raw: string): string {
   return raw
@@ -33,33 +41,51 @@ export function normalizeDomain(raw: string): string {
     .replace(/\/.*$/, '')
 }
 
-/** Разбирает B24_PORTALS. Бросает с внятным текстом: пустой реестр — это отказ обслуживать всех. */
-export function parsePortals(raw: string | undefined): PortalConfig[] {
-  if (!raw || raw.trim() === '') {
-    throw new Error('B24_PORTALS пуст: не задан ни один портал клиента')
+/** Разбирает одну строку реестра. Имя переменной нужно только для текста ошибки. */
+export function parsePortalLine(name: string, line: string): PortalConfig {
+  const parts = line.split(',').map((p) => p.trim())
+  if (parts.length !== 4) {
+    throw new Error(`${name}: ожидалось «домен,id исполнителя,client_id,client_secret», получено ${parts.length} полей`)
   }
 
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    throw new Error('B24_PORTALS: не разбирается как JSON-массив')
+  const [rawDomain, rawResponsible, clientId, clientSecret] = parts as [string, string, string, string]
+  const domain = normalizeDomain(rawDomain)
+  const responsibleId = Number(rawResponsible)
+
+  if (!domain) throw new Error(`${name}: не указан домен портала`)
+  if (!Number.isInteger(responsibleId) || responsibleId <= 0) {
+    throw new Error(`${name}: id исполнителя должен быть положительным целым, получено «${rawResponsible}»`)
+  }
+  if (!clientId || !clientSecret) {
+    throw new Error(`${name}: не указаны client_id или client_secret локального приложения`)
   }
 
-  const list = z.array(PortalSchema).min(1).safeParse(parsed)
-  if (!list.success) {
-    throw new Error(`B24_PORTALS: ${list.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`)
+  return { domain, responsibleId, clientId, clientSecret }
+}
+
+/** Собирает реестр из всех переменных `B24_PORTAL_*`. Пустой реестр — отказ обслуживать всех. */
+export function parsePortals(env: Record<string, string | undefined>): PortalConfig[] {
+  const entries = Object.entries(env)
+    .filter(([key, value]) => key.startsWith(PORTAL_ENV_PREFIX) && value?.trim())
+    // ⚠ Порядок фиксируем по имени переменной: окружение отдаёт ключи в произвольном
+    // порядке, а сообщения об ошибках и логи должны быть воспроизводимыми.
+    .sort(([a], [b]) => a.localeCompare(b))
+
+  if (entries.length === 0) {
+    throw new Error(`Не задан ни один портал клиента: нужна хотя бы одна переменная ${PORTAL_ENV_PREFIX}*`)
   }
 
-  const portals = list.data.map((p) => ({ ...p, domain: normalizeDomain(p.domain) }))
+  const portals = entries.map(([name, value]) => parsePortalLine(name, (value as string).trim()))
 
   // ⚠ Дубль домена — это не «лишняя строка», а два разных набора ключей на один портал:
-  // какой из них применится, зависело бы от порядка в JSON, то есть от случайности.
-  const seen = new Set<string>()
-  for (const p of portals) {
-    if (seen.has(p.domain)) throw new Error(`B24_PORTALS: домен ${p.domain} указан дважды`)
-    seen.add(p.domain)
-  }
+  // какой из них применится, зависело бы от порядка переменных, то есть от случайности.
+  const seen = new Map<string, string>()
+  entries.forEach(([name], index) => {
+    const portal = portals[index] as PortalConfig
+    const first = seen.get(portal.domain)
+    if (first) throw new Error(`Домен ${portal.domain} указан дважды: ${first} и ${name}`)
+    seen.set(portal.domain, name)
+  })
 
   return portals
 }

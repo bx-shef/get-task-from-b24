@@ -77,7 +77,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
 
   return {
     publicBaseUrl: required(env, 'PUBLIC_BASE_URL').replace(/\/+$/, ''),
-    portals: parsePortals(env.B24_PORTALS),
+    portals: parsePortals(env),
     targetWebhookUrl,
     targetDomain,
     targetResponsibleId: positiveInt(env, 'B24_TARGET_RESPONSIBLE_ID'),
