@@ -1,0 +1,56 @@
+name: CI
+
+# Единственный обязательный статус-чек репозитория.
+#
+# ⚠ Имя джобы `ci` — часть защиты `main`: ruleset `protect-main` требует статус-чек ПО ИМЕНИ.
+# Переименуешь джобу — GitHub перестанет требовать что-либо и не сообщит об этом.
+# См. docs/REPO_SETUP_CHECKLIST.md и docs/PROCESS.md.
+#
+# ⚠ `continue-on-error` запрещён во ВСЕХ воркфлоу: он делает шаг красным, а джобу зелёной,
+# то есть гасит проверку молча. Нужно исключение — сперва обоснование в docs/PROCESS.md.
+#
+# ⚠ Сторонние actions пиним по полному SHA коммита (комментарий `# vX.Y.Z` читает Dependabot):
+# изменяемый тег может быть перезаписан владельцем действия и выполнит чужой код на раннере
+# с GITHUB_TOKEN.
+#
+# ⬜ Каркас: стек не зафиксирован, поэтому шагов сборки пока нет. Появятся команды
+# (CLAUDE.md → «Команды») — добавляются сюда: install → lint → test → typecheck → build.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # Отменяем только устаревшие прогоны PR; прогон на `main` не прерываем.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: ci
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Единственная содержательная проверка каркаса: каждый .md в корне и в docs/
+      # несёт штамп `> Last reviewed: YYYY-MM-DD` (конвенция из CLAUDE.md).
+      # Когда появится тест-раннер, проверка переезжает в тесты и удаляется отсюда.
+      - name: Review stamps in docs
+        run: |
+          set -euo pipefail
+          missing=0
+          for f in *.md docs/*.md; do
+            [ -e "$f" ] || continue
+            if ! head -n 5 "$f" | grep -q '^> Last reviewed: [0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}$'; then
+              echo "::error file=$f::нет штампа '> Last reviewed: YYYY-MM-DD' под заголовком"
+              missing=1
+            fi
+          done
+          exit $missing

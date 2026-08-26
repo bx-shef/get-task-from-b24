@@ -1,0 +1,33 @@
+version: 2
+updates:
+  # --- Версии GitHub Actions в CI -------------------------------------------
+  # Пины по SHA в воркфлоу поддерживаются автоматически: Dependabot читает
+  # комментарий `# vX.Y.Z` рядом с SHA.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  # ⬜ Включить вместе со стеком (сейчас манифестов в репозитории нет, и Dependabot
+  # будет ругаться на отсутствующий файл):
+  #
+  # - package-ecosystem: npm
+  #   directory: /
+  #   schedule: { interval: weekly, day: monday }
+  #   open-pull-requests-limit: 5
+  #   versioning-strategy: increase
+  #   groups:
+  #     dev-deps:
+  #       dependency-type: development
+  #
+  # - package-ecosystem: docker
+  #   directory: /
+  #   schedule: { interval: weekly, day: monday }
+  #   groups:
+  #     docker:
+  #       patterns: ["*"]
