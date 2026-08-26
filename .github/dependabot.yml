@@ -1,0 +1,48 @@
+version: 2
+updates:
+  # --- Зависимости приложения (npm / pnpm) ----------------------------------
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    versioning-strategy: increase
+    groups:
+      # Все dev-зависимости — одним PR.
+      dev-deps:
+        dependency-type: development
+    # ⚠ typescript-eslint не работает с TS 7 («does not support TS 7.0»), то есть на
+    # мажоре линт не запускается вовсе. Мажор поднимаем руками, когда появится поддержка.
+    ignore:
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+
+  # --- Версии GitHub Actions в CI -------------------------------------------
+  # Пины по SHA поддерживаются автоматически: Dependabot читает комментарий `# vX.Y.Z`.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  # --- Базовые образы Docker ------------------------------------------------
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      docker:
+        patterns:
+          - "*"
+    # ⚠ В node:25+ из официальных образов убран corepack (`RUN corepack enable` →
+    # exit 127). Остаёмся на линии 22 LTS; мажор поднимаем руками, когда будет чем
+    # заменить corepack. Минор и патч 22-й линии проезжают штатно.
+    ignore:
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
