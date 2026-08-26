@@ -88,3 +88,23 @@ export async function migrate(pool: Pool): Promise<void> {
     client.release()
   }
 }
+
+/**
+ * Выполняет `fn` под advisory-локом Postgres, взятым по строковому ключу.
+ *
+ * ⚠ Нужен продлению токена портала. Воркер работает с `concurrency: 5`, и пять заданий
+ * одного портала, увидев истекающий токен, обменивают ОДИН И ТОТ ЖЕ `refresh_token`.
+ * Битрикс24 его ротирует: выигрывает один, четверо получают отказ — а после того как
+ * невосстановимые ошибки стали останавливать очередь, это означало четыре брошенные
+ * задачи. Найдено вторым циклом ревью.
+ */
+export async function withAdvisoryLock<T>(pool: Pool, key: string, fn: () => Promise<T>): Promise<T> {
+  const client = await pool.connect()
+  try {
+    await client.query('select pg_advisory_lock(hashtext($1))', [key])
+    return await fn()
+  } finally {
+    await client.query('select pg_advisory_unlock(hashtext($1))', [key]).catch(() => {})
+    client.release()
+  }
+}

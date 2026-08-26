@@ -6,9 +6,12 @@ import { B24Error, EXPIRED_TOKEN_CODES } from './errors.js'
 import { refreshTokens } from './rest.js'
 import { getPortal, updateAuth, type PortalAuth } from '../store/portalTokens.js'
 import type { PortalConfig } from '../domain/portals.js'
-import type { Pool } from '../store/db.js'
+import { withAdvisoryLock, type Pool } from '../store/db.js'
 
 export type Auth = Pick<PortalAuth, 'accessToken' | 'clientEndpoint'>
+
+/** Токены плюс срок их жизни: срок нужен, чтобы отличить «свежее» от «устаревшего». */
+type LiveAuth = PortalAuth & { expiresAt: Date }
 
 /** Запас до истечения: продлеваем заранее, чтобы токен не протух посреди пары вызовов. */
 const REFRESH_MARGIN_MS = 5 * 60 * 1000
@@ -27,20 +30,28 @@ export interface PortalAccess {
  * ошибка звучала как «клиенту надо переустановить приложение», хотя переустановка
  * не нужна. Найдено ревью.
  */
-async function refreshAndStore(
-  access: PortalAccess,
-  portal: PortalConfig,
-  current: PortalAuth,
-): Promise<PortalAuth> {
-  const fresh = await refreshTokens(current.serverEndpoint, portal.clientId, portal.clientSecret, current.refreshToken)
-  const auth: PortalAuth = {
-    accessToken: fresh.accessToken,
-    refreshToken: fresh.refreshToken,
-    clientEndpoint: current.clientEndpoint,
-    serverEndpoint: current.serverEndpoint,
-  }
-  await updateAuth(access.pool, portal.domain, auth, fresh.expiresAt, access.encKey)
-  return auth
+async function refreshAndStore(access: PortalAccess, portal: PortalConfig, current: LiveAuth): Promise<LiveAuth> {
+  return withAdvisoryLock(access.pool, `refresh:${portal.domain}`, async () => {
+    // ⚠ Под локом перечитываем строку: пока мы ждали лока, соседнее задание могло уже
+    // продлить токен. Признак «уже продлили» — БОЛЕЕ ПОЗДНИЙ срок жизни, а не иное
+    // значение токена: значение отличается и когда строка устарела. Обменивать тот же
+    // `refresh_token` второй раз нельзя — Битрикс24 его ротирует, и повтор вернёт отказ.
+    const latest = await getPortal(access.pool, portal.domain, access.encKey)
+    if (latest && latest.expiresAt.getTime() > current.expiresAt.getTime()) {
+      return latest
+    }
+
+    const fresh = await refreshTokens(current.serverEndpoint, portal.clientId, portal.clientSecret, current.refreshToken)
+    const auth: LiveAuth = {
+      accessToken: fresh.accessToken,
+      refreshToken: fresh.refreshToken,
+      clientEndpoint: current.clientEndpoint,
+      serverEndpoint: current.serverEndpoint,
+      expiresAt: fresh.expiresAt,
+    }
+    await updateAuth(access.pool, portal.domain, auth, fresh.expiresAt, access.encKey)
+    return auth
+  })
 }
 
 /**
@@ -58,7 +69,7 @@ export async function withPortalAuth<T>(
     throw new B24Error(`портал ${portal.domain} не установлен: нет сохранённых токенов`, 'NOT_INSTALLED', false)
   }
 
-  let current: PortalAuth = stored
+  let current: LiveAuth = stored
 
   if (stored.expiresAt.getTime() - Date.now() < REFRESH_MARGIN_MS) {
     current = await refreshAndStore(access, portal, current)

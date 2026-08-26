@@ -73,7 +73,7 @@ export function startWorkers(ctx: AppContext): { tasks: Worker; notifications: W
             return { ...task, createdByName: await fetchUserName(auth, task.createdBy) }
           }),
         createTask: (fields) => createTargetTask(config.targetWebhookUrl, fields),
-        claim: async (domain, taskId) => (await claim(pool, domain, taskId)) !== null,
+        claim: (domain, taskId) => claim(pool, domain, taskId),
         markDone: (domain, taskId, targetTaskId) => markDone(pool, domain, taskId, targetTaskId),
         markFailed: (domain, taskId, reason) => markFailed(pool, domain, taskId, reason),
         notify: async (text) => {

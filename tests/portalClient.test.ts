@@ -19,6 +19,10 @@ vi.mock('../src/store/portalTokens.js', () => ({
 vi.mock('../src/b24/rest.js', () => ({
   refreshTokens: (...args: unknown[]) => refreshTokens(...args),
 }))
+// Продление идёт под advisory-локом Postgres; здесь база не нужна — важен сам порядок.
+vi.mock('../src/store/db.js', () => ({
+  withAdvisoryLock: (_pool: unknown, _key: string, fn: () => Promise<unknown>) => fn(),
+}))
 
 const { withPortalAuth } = await import('../src/b24/portalClient.js')
 
@@ -53,22 +57,35 @@ describe('withPortalAuth', () => {
     expect(refreshTokens).not.toHaveBeenCalled()
   })
 
-  it('токен на исходе продлевается заранее', async () => {
+  it('токен на исходе продлевается заранее, и в базу уходит СВЕЖАЯ пара', async () => {
+    const expiresAt = new Date(Date.now() + 3600_000)
     getPortal.mockResolvedValue(stored(60 * 1000))
-    refreshTokens.mockResolvedValue({ accessToken: 'at-2', refreshToken: 'rt-2', expiresAt: new Date() })
+    refreshTokens.mockResolvedValue({ accessToken: 'at-2', refreshToken: 'rt-2', expiresAt })
     const fn = vi.fn(async () => 'ok')
 
     await withPortalAuth(access, portal, fn)
     expect(fn).toHaveBeenCalledWith(expect.objectContaining({ accessToken: 'at-2' }))
-    expect(updateAuth).toHaveBeenCalled()
+    // ⚠ Проверяем аргументы, а не факт вызова: ревью показало мутацией, что запись
+    // ПОТРАЧЕННОГО refresh-токена в базу оставляла все тесты зелёными. До перезапуска
+    // всё работает, после — портал не продлевается, и ошибка звучит как «клиенту надо
+    // переустановить приложение».
+    expect(updateAuth).toHaveBeenCalledWith(
+      expect.anything(),
+      portal.domain,
+      expect.objectContaining({ accessToken: 'at-2', refreshToken: 'rt-2' }),
+      expiresAt,
+      access.encKey,
+    )
   })
 
   // ⚠ Тот самый дефект: во втором продлении должен участвовать НОВЫЙ refresh-токен.
   it('второе продление берёт токен из первого, а не потраченный', async () => {
     getPortal.mockResolvedValue(stored(60 * 1000))
+    // Продлённый токен живёт дольше прежней строки — иначе перечитанная под локом
+    // строка выглядела бы «более свежей», чем результат нашего же продления.
     refreshTokens
-      .mockResolvedValueOnce({ accessToken: 'at-2', refreshToken: 'rt-2', expiresAt: new Date() })
-      .mockResolvedValueOnce({ accessToken: 'at-3', refreshToken: 'rt-3', expiresAt: new Date() })
+      .mockResolvedValueOnce({ accessToken: 'at-2', refreshToken: 'rt-2', expiresAt: new Date(Date.now() + 3600_000) })
+      .mockResolvedValueOnce({ accessToken: 'at-3', refreshToken: 'rt-3', expiresAt: new Date(Date.now() + 3600_000) })
 
     const fn = vi.fn()
       .mockRejectedValueOnce(new B24Error('протух', 'expired_token', false))
@@ -82,7 +99,7 @@ describe('withPortalAuth', () => {
 
   it('после продления повтор ровно один: цикл «протух → продлили → протух» недопустим', async () => {
     getPortal.mockResolvedValue(stored(60 * 60 * 1000))
-    refreshTokens.mockResolvedValue({ accessToken: 'at-2', refreshToken: 'rt-2', expiresAt: new Date() })
+    refreshTokens.mockResolvedValue({ accessToken: 'at-2', refreshToken: 'rt-2', expiresAt: new Date(Date.now() + 3600_000) })
     const fn = vi.fn().mockRejectedValue(new B24Error('протух', 'expired_token', false))
 
     await expect(withPortalAuth(access, portal, fn)).rejects.toThrow()
@@ -107,5 +124,23 @@ describe('withPortalAuth', () => {
       code: 'NOT_INSTALLED',
       retryable: false,
     })
+  })
+})
+
+describe('гонка продления', () => {
+  // ⚠ Воркер работает с concurrency 5: пять заданий одного портала, увидев истекающий
+  // токен, обменивали ОДИН И ТОТ ЖЕ refresh_token. Битрикс24 его ротирует — выигрывал
+  // один, остальные получали отказ, и после того как невосстановимые ошибки стали
+  // останавливать очередь, это означало брошенные задачи. Найдено вторым циклом ревью.
+  it('если сосед уже продлил, второй раз токен не обменивается', async () => {
+    getPortal
+      .mockResolvedValueOnce(stored(60 * 1000))
+      .mockResolvedValueOnce({ ...stored(60 * 60 * 1000), accessToken: 'at-сосед', refreshToken: 'rt-сосед' })
+
+    const fn = vi.fn(async () => 'ok')
+    expect(await withPortalAuth(access, portal, fn)).toBe('ok')
+
+    expect(refreshTokens).not.toHaveBeenCalled()
+    expect(fn).toHaveBeenCalledWith(expect.objectContaining({ accessToken: 'at-сосед' }))
   })
 })

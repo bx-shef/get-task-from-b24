@@ -12,7 +12,7 @@
 ## Конвейер
 
 ```
-PR      → ci (lint + test + typecheck + build + штампы ревью) + docker-build без push
+PR      → ci (lint + test + typecheck + build; тесты — против настоящего Postgres) + docker-build без push
 main    → ci → build & push в ghcr.io/bx-shef/get-task-from-b24:latest
 сервер  → Watchtower видит новый образ (~5 мин) → перезапускает контейнер
 ```

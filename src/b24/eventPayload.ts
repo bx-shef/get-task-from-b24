@@ -118,9 +118,15 @@ export interface InstallEvent {
   applicationToken: string
   accessToken: string
   refreshToken: string
-  clientEndpoint: string
+  /**
+   * ⚠ Поля `clientEndpoint` здесь НЕТ намеренно. Адрес портала берётся только из
+   * реестра (`portalRestUrl`): именно через него панель ревью нашла SSRF, и поле,
+   * оставленное в разобранной структуре, приглашает вернуть как было.
+   */
   serverEndpoint: string
   expiresIn: number
+  /** Права, выданные приложению. В событии установки поле обязательное. */
+  scope: string[]
 }
 
 export function parseInstallEvent(body: Record<string, unknown>): InstallEvent | null {
@@ -131,16 +137,20 @@ export function parseInstallEvent(body: Record<string, unknown>): InstallEvent |
   const refreshToken = str(auth.refresh_token)
   if (!domain || !accessToken || !refreshToken) return null
 
-  const clientEndpoint = str(auth.client_endpoint) || `https://${domain}/rest/`
   return {
+    // ⚠ Скоуп берём ИЗ СОБЫТИЯ, а не из `app.info`: в REST-ответе `app.info` поля
+    // `scope` нет вовсе (оно есть только в PHP-обёртке SDK), поэтому проверка по нему
+    // была мёртвой — выглядела гарантией «без прав на задачи установку не примем»,
+    // а не гарантировала ничего. Найдено вторым циклом ревью.
+    scope: str(auth.scope).split(',').map((s) => s.trim()).filter(Boolean),
     event: str(body.event).toUpperCase(),
     domain,
     memberId: str(auth.member_id),
     applicationToken: str(auth.application_token) || str(body.application_token as string),
     accessToken,
     refreshToken,
-    clientEndpoint,
-    serverEndpoint: str(auth.server_endpoint) || 'https://oauth.bitrix.info/rest/',
+    // Пустой или чужой адрес заменяется на умолчание в роуте (`isKnownOauthHost`).
+    serverEndpoint: str(auth.server_endpoint),
     expiresIn: Number(auth.expires_in) > 0 ? Number(auth.expires_in) : 3600,
   }
 }

@@ -33,6 +33,23 @@ export interface TransferRow {
  */
 export const STALE_CLAIM_INTERVAL = '10 minutes'
 
+/** Чтение строки журнала: нужна операторской диагностике и контрактным тестам store. */
+export async function find(pool: Pool, domain: string, sourceTaskId: number): Promise<TransferRow | null> {
+  const { rows } = await pool.query<TransferRow>(
+    'select * from transfers where domain = $1 and source_task_id = $2',
+    [domain, sourceTaskId],
+  )
+  return rows[0] ?? null
+}
+
+export type ClaimResult =
+  /** Заняли: можно переносить. */
+  | { claimed: true }
+  /** Задача уже перенесена — это норма, повторная доставка события. */
+  | { claimed: false; transferred: true }
+  /** Занята другим воркером прямо сейчас: повторить позже, но НЕ считать успехом. */
+  | { claimed: false; transferred: false }
+
 /**
  * Занимает задачу под перенос — или перезанимает провалившуюся/брошенную.
  *
@@ -54,7 +71,7 @@ export const STALE_CLAIM_INTERVAL = '10 minutes'
  * @returns `null`, если задача уже перенесена или её прямо сейчас переносит другой
  *          воркер; иначе занятую строку.
  */
-export async function claim(pool: Pool, domain: string, sourceTaskId: number): Promise<TransferRow | null> {
+export async function claim(pool: Pool, domain: string, sourceTaskId: number): Promise<ClaimResult> {
   const { rows } = await pool.query<TransferRow>(
     `insert into transfers (domain, source_task_id, status)
      values ($1, $2, 'pending')
@@ -66,7 +83,17 @@ export async function claim(pool: Pool, domain: string, sourceTaskId: number): P
      returning *`,
     [domain, sourceTaskId],
   )
-  return rows[0] ?? null
+
+  if (rows[0]) return { claimed: true }
+
+  // ⚠ «Не заняли» — это ДВА разных случая, и путать их нельзя. Найдено вторым циклом
+  // ревью: воркер, убитый посреди переноса (выкат, OOM), оставляет свежую `pending`
+  // строку; BullMQ возвращает зависшее задание и прогоняет обработчик заново — и он
+  // получал «занято», рапортовал «дубль» и завершался УСПЕШНО. Задача клиента не
+  // создана, строка навсегда в `pending`, ретраев больше нет. Тот же дефект, что
+  // чинили в первом цикле, только вход не «ретрай», а «рестарт контейнера».
+  const existing = await find(pool, domain, sourceTaskId)
+  return { claimed: false, transferred: existing?.target_task_id != null }
 }
 
 export async function markDone(pool: Pool, domain: string, sourceTaskId: number, targetTaskId: number): Promise<void> {
@@ -99,11 +126,3 @@ export async function markFailed(pool: Pool, domain: string, sourceTaskId: numbe
   )
 }
 
-/** Чтение строки журнала: нужна операторской диагностике и контрактным тестам store. */
-export async function find(pool: Pool, domain: string, sourceTaskId: number): Promise<TransferRow | null> {
-  const { rows } = await pool.query<TransferRow>(
-    'select * from transfers where domain = $1 and source_task_id = $2',
-    [domain, sourceTaskId],
-  )
-  return rows[0] ?? null
-}

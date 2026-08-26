@@ -5,6 +5,7 @@
 import { callPortal, callWebhook } from './rest.js'
 import { B24Error } from './errors.js'
 import type { SourceTaskFull, TargetTaskFields } from '../domain/taskMapping.js'
+import { portalRestUrl } from '../domain/portals.js'
 import type { PortalAuth } from '../store/portalTokens.js'
 
 type Auth = Pick<PortalAuth, 'accessToken' | 'clientEndpoint'>
@@ -82,12 +83,16 @@ export function formatUserName(raw: unknown): string | undefined {
   return parts.length > 0 ? parts.join(' ') : undefined
 }
 
-const TASK_SELECT = ['ID', 'TITLE', 'DESCRIPTION', 'CREATED_BY', 'RESPONSIBLE_ID', 'DEADLINE']
-
 export async function fetchSourceTask(auth: Auth, taskId: number): Promise<SourceTaskFull> {
   // ⚠ Шлём и `taskId`, и `id`: страница метода перечисляет обязательными оба имени,
   // и промах именем означал бы отказ на каждой задаче.
-  const result = await callPortal<unknown>(auth, 'tasks.task.get', { taskId, id: taskId, select: TASK_SELECT })
+  //
+  // ⚠ `select` не передаём НАМЕРЕННО. Документация: «если select не задан, приходит
+  // базовый набор полей задачи» — а нам нужен именно базовый. Список имён в ВЕРХНЕМ
+  // регистре при camelCase-ответе v3 мог быть не понят методом, и тогда поля просто не
+  // пришли бы: `parseSourceTask` бросил бы `BAD_TASK`, который НЕ ретраится, — то есть
+  // каждая задача терялась бы мгновенно и окончательно. Найдено вторым циклом ревью.
+  const result = await callPortal<unknown>(auth, 'tasks.task.get', { taskId, id: taskId })
   return parseSourceTask(unwrapTask(result))
 }
 
@@ -134,26 +139,45 @@ export async function createTargetTask(webhookUrl: string, fields: TargetTaskFie
  * ⚠ Адрес вызова строится ИЗ ДОМЕНА РЕЕСТРА, а не из тела запроса. Подделать ответ
  * можно только владея самим порталом — а это и есть то, что мы проверяем.
  */
-export async function verifyPortalToken(domain: string, accessToken: string): Promise<string[]> {
-  const info = await callPortal<{ scope?: string | string[] }>(
-    { accessToken, clientEndpoint: `https://${domain}/rest/` },
+export async function verifyPortalToken(domain: string, accessToken: string): Promise<{ code?: string }> {
+  const info = await callPortal<{ CODE?: string; code?: string }>(
+    { accessToken, clientEndpoint: portalRestUrl(domain) },
     'app.info',
     {},
   )
-  const scope = info?.scope
-  if (Array.isArray(scope)) return scope
-  return typeof scope === 'string' ? scope.split(',').map((s) => s.trim()) : []
+  // ⚠ `CODE` у локального приложения — это его `client_id`. Сверка с реестром закрывает
+  // остаток дыры: без неё установку можно перезаписать валидным токеном ЛЮБОГО другого
+  // приложения того же портала — `app.info` на него ответит успешно. Найдено вторым
+  // циклом ревью.
+  const code = info?.CODE ?? info?.code
+  return { code: typeof code === 'string' ? code : undefined }
 }
 
-/** Подписка на событие создания задачи. Повторный вызов безопасен: портал не плодит дубли. */
-export async function bindTaskAddEvent(auth: Auth, handlerUrl: string): Promise<void> {
+/**
+ * События, на которые подписываемся при установке.
+ *
+ * ⚠ `onAppUpdate` и `onAppUninstall` подписываются ЯВНО. Документация нигде не обещает,
+ * что они доставляются на callback установки сами по себе, — а без них два тихих отказа:
+ * обновлённый `application_token` не сохранится (и все события начнут получать 401 при
+ * внешне исправной установке), а токены удалённого приложения останутся в базе
+ * действующей установкой. Найдено вторым циклом ревью.
+ */
+export const BOUND_EVENTS = ['onTaskAdd', 'onAppUpdate', 'onAppUninstall'] as const
+
+/** Повторный вызов безопасен: «обработчик уже есть» — это норма при переустановке. */
+export async function bindEvent(auth: Auth, event: string, handlerUrl: string): Promise<void> {
   try {
-    await callPortal(auth, 'event.bind', { event: 'onTaskAdd', handler: handlerUrl })
+    await callPortal(auth, 'event.bind', { event, handler: handlerUrl })
   } catch (error) {
-    // ⚠ Повторная установка приходит на уже подписанный портал — это норма, а не сбой.
     if (error instanceof B24Error && /handler.*already|ERROR_HANDLER_ALREADY_FOUND/i.test(error.code + error.message)) {
       return
     }
     throw error
+  }
+}
+
+export async function bindAppEvents(auth: Auth, handlerUrl: string): Promise<void> {
+  for (const event of BOUND_EVENTS) {
+    await bindEvent(auth, event, handlerUrl)
   }
 }

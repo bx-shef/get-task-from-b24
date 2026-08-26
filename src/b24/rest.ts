@@ -20,6 +20,11 @@ async function post<T>(url: string, body: Record<string, unknown>): Promise<T> {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
+      // ⚠ За редиректами не идём. Ревью доказало прогоном: 307 сохраняет метод и тело,
+      // undici идёт за кросс-доменным редиректом молча — и токен портала (а при
+      // продлении и `client_secret`) уезжает на чужой хост, минуя весь allow-list,
+      // который проверяет только ПЕРВЫЙ адрес.
+      redirect: 'error',
       signal: AbortSignal.timeout(TIMEOUT_MS),
     })
   } catch (cause) {
@@ -64,6 +69,18 @@ export function callPortal<T>(
   return post<T>(`${base}/${method}.json`, { ...params, auth: auth.accessToken })
 }
 
+interface TokenResponse {
+  access_token?: string
+  refresh_token?: string
+  expires_in?: number
+  error?: string
+  error_description?: string
+}
+
+async function readTokenResponse(response: Response): Promise<TokenResponse> {
+  return (await response.json().catch(() => ({}))) as TokenResponse
+}
+
 export interface RefreshedTokens {
   accessToken: string
   refreshToken: string
@@ -83,24 +100,36 @@ export function tokenEndpoint(serverEndpoint: string): string {
   return new URL('/oauth/token/', serverEndpoint).toString()
 }
 
-/** Известные хосты сервера авторизации Битрикс24. */
-export const DEFAULT_OAUTH_ENDPOINT = 'https://oauth.bitrix.info/rest/'
+/**
+ * Сервер авторизации по умолчанию.
+ *
+ * ⚠ `oauth.bitrix24.tech`, а не `oauth.bitrix.info`: документация называет доверенным
+ * именно его — «все операции с секретным кодом приложения должны проводиться
+ * исключительно с сервером авторизации oauth.bitrix24.tech». Найдено вторым циклом ревью.
+ */
+export const DEFAULT_OAUTH_ENDPOINT = 'https://oauth.bitrix24.tech/rest/'
+
+/** Точный список хостов сервера авторизации. */
+const KNOWN_OAUTH_HOSTS = new Set(['oauth.bitrix24.tech', 'oauth.bitrix.info'])
 
 /**
  * ⚠ Без этой проверки посторонний, приславший установку со своим `server_endpoint`,
  * получал бы `client_id` и `client_secret` портала прямым текстом при первом же
  * продлении токена (находка ревью).
+ *
+ * ⚠ Список точный, без «любой поддомен `*.bitrix24.tech`»: шире, чем нужно, — значит
+ * шире, чем безопасно.
  */
 export function isKnownOauthHost(serverEndpoint: string): boolean {
-  let host: string
   try {
     const url = new URL(serverEndpoint)
-    if (url.protocol !== 'https:') return false
-    host = url.hostname.toLowerCase()
+    // ⚠ Проверяем и то, что в URL нет логина с паролем: `https://oauth.bitrix24.tech@evil.tld/`
+    // имеет hostname `evil.tld`, но глазами читается как доверенный адрес.
+    if (url.protocol !== 'https:' || url.username || url.password) return false
+    return KNOWN_OAUTH_HOSTS.has(url.hostname.toLowerCase())
   } catch {
     return false
   }
-  return host === 'oauth.bitrix.info' || host === 'oauth.bitrix24.tech' || host.endsWith('.bitrix24.tech')
 }
 
 export async function refreshTokens(
@@ -118,32 +147,52 @@ export async function refreshTokens(
     refresh_token: refreshToken,
   })
 
-  let response: Response
+  const endpoint = tokenEndpoint(serverEndpoint)
+
+  // ⚠ Редиректам не следуем: продление несёт `client_secret`, и 302 на чужой хост
+  // увёл бы секрет туда вместе с телом запроса.
+  const common = { redirect: 'error' as const, signal: AbortSignal.timeout(TIMEOUT_MS) }
+
+  let payload: TokenResponse
+  let status: number
   try {
-    response = await fetch(tokenEndpoint(serverEndpoint), {
+    const first = await fetch(endpoint, {
+      ...common,
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body,
-      signal: AbortSignal.timeout(TIMEOUT_MS),
     })
+    status = first.status
+    payload = await readTokenResponse(first)
+
+    // ⚠ POST документацией НЕ подтверждён: единственная описанная форма — GET с
+    // query-строкой. POST выбран, чтобы `client_secret` не оседал в access-логах, но
+    // ставить на непроверенное допущение всю работу с порталом нельзя: цена промаха —
+    // «клиенту надо переустановить приложение» у всех клиентов сразу и через час после
+    // запуска. Поэтому при отказе повторяем документированной формой. Найдено вторым
+    // циклом ревью; после живого замера на первом портале лишнюю ветку убрать.
+    if (!payload.access_token) {
+      const url = new URL(endpoint)
+      for (const [key, value] of body) url.searchParams.set(key, value)
+      const second = await fetch(url, common)
+      status = second.status
+      payload = await readTokenResponse(second)
+    }
   } catch (cause) {
     throw new B24Error(`сеть при продлении токена: ${(cause as Error).message}`, 'NETWORK', true)
   }
 
-  const payload = (await response.json().catch(() => ({}))) as {
-    access_token?: string
-    refresh_token?: string
-    expires_in?: number
-    error?: string
-    error_description?: string
-  }
-
   if (!payload.access_token || !payload.refresh_token) {
-    // ⚠ Невозможность продлить токен НЕ повторяема: клиент переустанавливает приложение.
+    // ⚠ Повторяемость решает СТАТУС, а не сам факт отказа. Раньше любой ответ без
+    // токенов считался невосстановимым — а после того, как флаг стал останавливать
+    // очередь (`UnrecoverableError`), это означало: сервер авторизации ответил 502
+    // (обычное дело) → задача потеряна окончательно, а человек читает «клиенту надо
+    // переустановить приложение». Найдено вторым циклом ревью.
+    const retryable = isRetryable(payload.error ?? '', status)
     throw new B24Error(
-      payload.error_description ?? payload.error ?? 'портал не выдал токены',
+      payload.error_description ?? payload.error ?? `сервер авторизации ответил ${status}`,
       payload.error ?? 'REFRESH_FAILED',
-      false,
+      retryable,
     )
   }
 

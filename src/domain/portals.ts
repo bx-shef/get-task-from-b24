@@ -90,6 +90,17 @@ export function parsePortals(env: Record<string, string | undefined>): PortalCon
   return portals
 }
 
+/**
+ * Адрес REST портала клиента.
+ *
+ * ⚠ Собирается ТОЛЬКО из домена реестра и только здесь. Инвариант «адрес не берётся из
+ * тела запроса» — это то, чем закрыт SSRF (docs/PROCESSING.md), и размазанный по трём
+ * местам он держится ровно до первой правки.
+ */
+export function portalRestUrl(domain: string): string {
+  return `https://${normalizeDomain(domain)}/rest/`
+}
+
 /** Портал из реестра по домену. Не нашли — обслуживать не обязаны. */
 export function findPortal(portals: readonly PortalConfig[], domain: string): PortalConfig | undefined {
   const needle = normalizeDomain(domain)

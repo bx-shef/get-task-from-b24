@@ -33,17 +33,17 @@ beforeEach(async () => {
 
 describe('claim', () => {
   it('первый занимает, второй получает отказ', async () => {
-    expect(await claim(pool, domain, 1)).not.toBeNull()
-    expect(await claim(pool, domain, 1)).toBeNull()
+    expect(await claim(pool, domain, 1)).toEqual({ claimed: true })
+    expect(await claim(pool, domain, 1)).toEqual({ claimed: false, transferred: false })
   })
 
   // ⚠ Дефект, найденный ревью: с `do nothing` первая попытка занимала строку и падала,
   // а вторая получала «уже занято», рапортовала «дубль» и завершалась УСПЕШНО —
   // задача клиента не создавалась никогда и молча.
   it('после провала задачу можно занять снова', async () => {
-    expect(await claim(pool, domain, 2)).not.toBeNull()
+    expect(await claim(pool, domain, 2)).toEqual({ claimed: true })
     await markFailed(pool, domain, 2, 'портал недоступен')
-    expect(await claim(pool, domain, 2)).not.toBeNull()
+    expect(await claim(pool, domain, 2)).toEqual({ claimed: true })
     expect((await find(pool, domain, 2))?.status).toBe('pending')
   })
 
@@ -51,7 +51,8 @@ describe('claim', () => {
   it('перенесённую задачу занять нельзя', async () => {
     await claim(pool, domain, 3)
     await markDone(pool, domain, 3, 42)
-    expect(await claim(pool, domain, 3)).toBeNull()
+    // ⚠ «Уже перенесена» отличается от «занята другим»: первое — успех, второе — повод повторить.
+    expect(await claim(pool, domain, 3)).toEqual({ claimed: false, transferred: true })
     expect((await find(pool, domain, 3))?.target_task_id).toBe('42')
   })
 
@@ -59,8 +60,8 @@ describe('claim', () => {
   // переносит другой воркер — иначе оба создадут задачу. Этот тест поймал ровно такую
   // ошибку в первой версии исправления.
   it('свежую занятую задачу второй воркер не отбирает', async () => {
-    expect(await claim(pool, domain, 10)).not.toBeNull()
-    expect(await claim(pool, domain, 10)).toBeNull()
+    expect(await claim(pool, domain, 10)).toEqual({ claimed: true })
+    expect(await claim(pool, domain, 10)).toEqual({ claimed: false, transferred: false })
     expect((await find(pool, domain, 10))?.status).toBe('pending')
   })
 
@@ -70,12 +71,12 @@ describe('claim', () => {
       "update transfers set updated_at = now() - interval '1 hour' where domain = $1 and source_task_id = 11",
       [domain],
     )
-    expect(await claim(pool, domain, 11)).not.toBeNull()
+    expect(await claim(pool, domain, 11)).toEqual({ claimed: true })
   })
 
   it('разные порталы и задачи не мешают друг другу', async () => {
-    expect(await claim(pool, domain, 4)).not.toBeNull()
-    expect(await claim(pool, domain, 5)).not.toBeNull()
+    expect(await claim(pool, domain, 4)).toEqual({ claimed: true })
+    expect(await claim(pool, domain, 5)).toEqual({ claimed: true })
   })
 })
 

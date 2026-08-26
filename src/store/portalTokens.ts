@@ -44,7 +44,9 @@ export async function saveInstall(pool: Pool, input: SaveInstallInput, encKey: s
     `insert into portal_tokens (domain, member_id, application_token_hash, auth_enc, expires_at)
      values ($1, $2, $3, $4, $5)
      on conflict (domain) do update set
-       member_id = excluded.member_id,
+       -- ⚠ Пустым значением сохранённый member_id не затираем: он охраняет установку
+       -- от перехвата, а затёртый выключает проверку навсегда (находка ревью).
+       member_id = coalesce(nullif(excluded.member_id, ''), portal_tokens.member_id),
        application_token_hash = excluded.application_token_hash,
        auth_enc = excluded.auth_enc,
        expires_at = excluded.expires_at,

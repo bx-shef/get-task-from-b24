@@ -9,12 +9,13 @@ import { decide, type SkipReason } from '../domain/criteria.js'
 import { buildTargetTask, type SourceTaskFull, type TargetTaskFields } from '../domain/taskMapping.js'
 import { buildCreatedMessage, buildFailureMessage } from '../domain/telegramMessage.js'
 import type { PortalConfig } from '../domain/portals.js'
+import type { ClaimResult } from '../store/transfers.js'
 
 export interface TransferDeps {
   loadTask(domain: string, taskId: number): Promise<SourceTaskFull>
   createTask(fields: TargetTaskFields): Promise<number>
-  /** Занять задачу в журнале. `false` — её уже занял кто-то другой. */
-  claim(domain: string, taskId: number): Promise<boolean>
+  /** Занять задачу в журнале. */
+  claim(domain: string, taskId: number): Promise<ClaimResult>
   markDone(domain: string, taskId: number, targetTaskId: number): Promise<void>
   markFailed(domain: string, taskId: number, reason: string): Promise<void>
   /** Постановка сообщения в очередь уведомлений — не отправка. */
@@ -52,6 +53,7 @@ export async function transferTask(
   context: TransferContext = { isFinalFailure: () => false },
 ): Promise<TransferOutcome> {
   const domain = settings.portal.domain
+  let created: number | undefined
 
   try {
     // ⚠ В событии приходит только ID (docs/B24_EVENTS.md), поэтому критерии проверяются
@@ -68,9 +70,18 @@ export async function transferTask(
 
     // ⚠ Занимаем ДО создания: два события об одной задаче могут идти одновременно,
     // и решает это первичный ключ базы, а не проверка «уже есть?» перед вставкой.
-    if (!(await deps.claim(domain, taskId))) {
-      deps.log('duplicate', { domain, taskId })
-      return { status: 'duplicate' }
+    const claim = await deps.claim(domain, taskId)
+    if (!claim.claimed) {
+      // ⚠ «Уже перенесена» и «занята другим прямо сейчас» — РАЗНЫЕ исходы, и путать их
+      // нельзя. Второй случай возникает, когда воркер убит посреди переноса (выкат,
+      // OOM): BullMQ возвращает зависшее задание, а мы, приняв это за дубль,
+      // завершались успешно — задача клиента не создана, строка навсегда в `pending`.
+      // Найдено вторым циклом ревью.
+      if (claim.transferred) {
+        deps.log('duplicate', { domain, taskId })
+        return { status: 'duplicate' }
+      }
+      throw new Error('задача занята другим воркером — повторим позже')
     }
 
     const fields = buildTargetTask(source, {
@@ -81,26 +92,41 @@ export async function transferTask(
       titlePrefix: settings.titlePrefix,
     })
 
-    const targetTaskId = await deps.createTask(fields)
-    await deps.markDone(domain, taskId, targetTaskId)
-    deps.log('created', { domain, taskId, targetTaskId })
+    created = await deps.createTask(fields)
+    await deps.markDone(domain, taskId, created)
+    deps.log('created', { domain, taskId, targetTaskId: created })
 
-    // ⚠ Уведомление ставится в очередь отдельным шагом: упавший Telegram не должен
-    // приводить к повторному созданию задачи — она уже создана.
-    await deps.notify(
-      buildCreatedMessage({
-        title: fields.TITLE,
-        domain,
-        sourceTaskId: taskId,
-        targetTaskId,
-        targetDomain: settings.targetDomain,
-      }),
-    )
+    // ⚠ Уведомление ставится в очередь отдельным шагом и НЕ роняет перенос: задача уже
+    // создана, а повтор задания сходил бы в портал заново и завершился «дублем» —
+    // работа впустую, а сообщение всё равно потеряно. Найдено вторым циклом ревью.
+    await deps
+      .notify(
+        buildCreatedMessage({
+          title: fields.TITLE,
+          domain,
+          sourceTaskId: taskId,
+          targetTaskId: created,
+          targetDomain: settings.targetDomain,
+        }),
+      )
+      .catch((error: unknown) => {
+        deps.log('notify-failed', { domain, taskId, reason: (error as Error).message })
+      })
 
-    return { status: 'created', targetTaskId }
+    return { status: 'created', targetTaskId: created }
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
     const final = context.isFinalFailure(error)
+
+    if (created !== undefined) {
+      // ⚠ Задача у нас УЖЕ создана: журнал обязан это запомнить, иначе следующая
+      // попытка перезаймёт строку и заведёт вторую. Этот дефект внесла правка `claim`
+      // из первого цикла и поймал второй: замерено — создавались задачи 1000 и 1001.
+      await deps.markDone(domain, taskId, created).catch(() => {})
+      deps.log('failed-after-create', { domain, taskId, targetTaskId: created, reason })
+      return { status: 'created', targetTaskId: created }
+    }
+
     await deps.markFailed(domain, taskId, reason).catch(() => {})
     deps.log('failed', { domain, taskId, reason, final })
 

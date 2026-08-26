@@ -115,9 +115,16 @@ describe('parseInstallEvent', () => {
     expect(parseInstallEvent({ auth: { domain: 'a.ru' } })).toBeNull()
   })
 
-  it('нет client_endpoint — собираем из домена', () => {
-    const parsed = parseInstallEvent({ auth: { ...install.auth, client_endpoint: '' } })
-    expect(parsed?.clientEndpoint).toBe('https://client.bitrix24.ru/rest/')
+  // ⚠ Адрес портала в разобранном событии НЕ хранится: он берётся только из реестра.
+  // Именно через это поле панель ревью нашла SSRF.
+  it('адрес портала из тела не сохраняется', () => {
+    const parsed = parseInstallEvent({ auth: { ...install.auth, client_endpoint: 'https://evil.tld/rest/' } })
+    expect(JSON.stringify(parsed)).not.toContain('evil.tld')
+  })
+
+  it('права приложения разбираются из события', () => {
+    expect(parseInstallEvent({ auth: { ...install.auth, scope: 'task,user_brief' } })?.scope)
+      .toEqual(['task', 'user_brief'])
   })
 })
 

@@ -32,8 +32,12 @@ export function matchesTitlePrefix(title: string, prefix: string = DEFAULT_TITLE
   const needle = prefix.toLowerCase()
   if (!trimmed.startsWith(needle)) return false
 
+  // ⚠ Границей считается ЛЮБОЙ не буквенно-цифровой символ, а не список из пробела,
+  // двоеточия и тире: «#support!» и «#support(срочно)» — обычные человеческие
+  // названия, и молчаливый отказ по ним выглядит для клиента как пропажа задачи.
+  // Найдено вторым циклом ревью.
   const rest = trimmed.slice(needle.length)
-  return rest === '' || /^[\s:—–-]/.test(rest)
+  return rest === '' || !/^[\p{L}\p{N}]/u.test(rest)
 }
 
 /**
