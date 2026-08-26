@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildDescription, buildTargetTask, resolveDeadline, sourceTaskUrl } from '../src/domain/taskMapping.js'
+import { buildDescription, buildTargetTask, formatDeadline, resolveDeadline, sourceTaskUrl } from '../src/domain/taskMapping.js'
 import type { SourceTaskFull } from '../src/domain/taskMapping.js'
 
 const now = new Date('2026-08-26T10:00:00.000Z')
@@ -21,19 +21,30 @@ describe('sourceTaskUrl', () => {
   })
 })
 
+describe('formatDeadline', () => {
+  // ⚠ Найдено ревью по сверке с документацией: тип datetime у Битрикс24 —
+  // YYYY-MM-DDThh:mm:ss±hh:mm, без миллисекунд и без «Z». toISOString() давал и то,
+  // и другое: либо отказ метода, либо срок, уехавший на смещение пояса портала.
+  it('без миллисекунд и без Z, со смещением', () => {
+    expect(formatDeadline(new Date('2026-08-27T12:00:00.123Z'))).toBe('2026-08-27T12:00:00+00:00')
+    expect(formatDeadline(new Date('2026-08-27T12:00:00.123Z'))).not.toContain('Z')
+    expect(formatDeadline(new Date('2026-08-27T12:00:00.123Z'))).not.toContain('.')
+  })
+})
+
 describe('resolveDeadline', () => {
   it('берёт срок клиента', () => {
-    expect(resolveDeadline('2026-08-27T15:00:00+03:00', now, 24)).toBe('2026-08-27T12:00:00.000Z')
+    expect(resolveDeadline('2026-08-27T15:00:00+03:00', now, 24)).toBe('2026-08-27T12:00:00+00:00')
   })
 
   it('нет срока — сдвиг по умолчанию', () => {
-    expect(resolveDeadline(undefined, now, 24)).toBe('2026-08-27T10:00:00.000Z')
-    expect(resolveDeadline('', now, 24)).toBe('2026-08-27T10:00:00.000Z')
+    expect(resolveDeadline(undefined, now, 24)).toBe('2026-08-27T10:00:00+00:00')
+    expect(resolveDeadline('', now, 24)).toBe('2026-08-27T10:00:00+00:00')
   })
 
   // ⚠ Невалидная дата в tasks.task.add роняет создание целиком.
   it('нечитаемая дата не уезжает в портал', () => {
-    expect(resolveDeadline('0000-00-00 00:00:00', now, 24)).toBe('2026-08-27T10:00:00.000Z')
+    expect(resolveDeadline('0000-00-00 00:00:00', now, 24)).toBe('2026-08-27T10:00:00+00:00')
   })
 })
 
@@ -70,6 +81,6 @@ describe('buildTargetTask', () => {
   })
 
   it('срок переносится', () => {
-    expect(fields.DEADLINE).toBe('2026-08-27T12:00:00.000Z')
+    expect(fields.DEADLINE).toBe('2026-08-27T12:00:00+00:00')
   })
 })

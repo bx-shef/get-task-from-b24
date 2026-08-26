@@ -96,3 +96,14 @@ export async function updateAuth(
     [domain, encryptSecret(JSON.stringify(auth), encKey), expiresAt],
   )
 }
+
+/**
+ * Удаление портала при `ONAPPUNINSTALL`.
+ *
+ * ⚠ Копить токены удалённых приложений незачем: они уже недействительны, а в базе
+ * остаются как действующая установка — и портал выглядит подключённым, ничего не
+ * перенося.
+ */
+export async function deletePortal(pool: Pool, domain: string): Promise<void> {
+  await pool.query('delete from portal_tokens where domain = $1', [domain])
+}

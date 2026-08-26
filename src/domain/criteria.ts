@@ -22,9 +22,18 @@ export type Verdict = { transfer: true } | { transfer: false; reason: SkipReason
  * ⚠ Регистр не учитывается, ведущие пробелы игнорируются: человек, ставящий задачу,
  * пишет «#Support» и « #support» так же охотно, как канонический вариант, а отказ по
  * такому поводу выглядит как пропажа задачи, а не как несоблюдение формата.
+ *
+ * ⚠ После префикса обязана быть граница — конец строки или разделитель. Голый
+ * `startsWith` тащил бы «#supportive маркетинг» в перенос, да ещё и обрезал название
+ * до «ive маркетинг». Найдено ревью.
  */
 export function matchesTitlePrefix(title: string, prefix: string = DEFAULT_TITLE_PREFIX): boolean {
-  return title.trimStart().toLowerCase().startsWith(prefix.toLowerCase())
+  const trimmed = title.trimStart().toLowerCase()
+  const needle = prefix.toLowerCase()
+  if (!trimmed.startsWith(needle)) return false
+
+  const rest = trimmed.slice(needle.length)
+  return rest === '' || /^[\s:—–-]/.test(rest)
 }
 
 /**

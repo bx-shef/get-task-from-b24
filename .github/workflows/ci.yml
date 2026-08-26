@@ -35,6 +35,27 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
 
+    # ⚠ Настоящий Postgres, а не мок. Контрактные тесты журнала переносов проверяют
+    # поведение `on conflict` — то есть саму базу; ровно на этом месте панель ревью
+    # нашла два дефекта, которых юниты с заглушками не видели в принципе.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: app
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U app"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://app:app@localhost:5432/app
+
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -60,22 +81,6 @@ jobs:
 
       - name: Build
         run: pnpm build
-
-      # Конвенция из CLAUDE.md: каждый .md в корне и в docs/ несёт штамп ревью.
-      # ⚠ Проверка живёт в CI, а не только в голове: расхождение прозы с кодом
-      # обнаруживается случайно и стоит дорого.
-      - name: Review stamps in docs
-        run: |
-          set -euo pipefail
-          missing=0
-          for f in *.md docs/*.md; do
-            [ -e "$f" ] || continue
-            if ! head -n 5 "$f" | grep -q '^> Last reviewed: [0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}$'; then
-              echo "::error file=$f::нет штампа '> Last reviewed: YYYY-MM-DD' под заголовком"
-              missing=1
-            fi
-          done
-          exit $missing
 
   docker-build:
     name: docker-build

@@ -7,24 +7,34 @@
  * и это выглядит как «события не приходят», а не как ошибка.
  */
 
-export interface TaskAddEvent {
-  event: string
-  domain: string
-  memberId: string
-  applicationToken: string
+export interface TaskAddEvent extends EventEnvelope {
   taskId: number
-  auth: Record<string, string>
 }
+
+/**
+ * Ключи, которые нельзя раскладывать в объект.
+ *
+ * ⚠ Без этого фильтра `auth[__proto__][x]=1` пишет в `Object.prototype` всего процесса —
+ * а `parseBody` вызывается ПЕРВОЙ строкой обоих роутов, до сверки `application_token`.
+ * То есть загрязнить прототип живого процесса (с пулом Postgres, ioredis и bullmq
+ * внутри) мог кто угодно, без всякой авторизации. Найдено ревью, воспроизведено
+ * прогоном: `({}).polluted === 'yes'`.
+ */
+const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 
 /** Раскладывает плоские ключи `a[b][c]=1` во вложенный объект. */
 export function unflatten(flat: Record<string, string>): Record<string, unknown> {
-  const root: Record<string, unknown> = {}
+  // ⚠ Object.create(null): у результата нет прототипа, поэтому даже промах фильтра
+  // выше не даёт записи в общий Object.prototype. Два рубежа намеренно.
+  const root = Object.create(null) as Record<string, unknown>
 
   for (const [rawKey, value] of Object.entries(flat)) {
     const path = rawKey
       .replace(/\]/g, '')
       .split('[')
       .filter((part) => part !== '')
+
+    if (path.length === 0 || path.some((part) => FORBIDDEN_KEYS.has(part))) continue
 
     let node = root
     path.forEach((part, index) => {
@@ -33,7 +43,7 @@ export function unflatten(flat: Record<string, string>): Record<string, unknown>
         return
       }
       const next = node[part]
-      if (typeof next !== 'object' || next === null) node[part] = {}
+      if (typeof next !== 'object' || next === null) node[part] = Object.create(null)
       node = node[part] as Record<string, unknown>
     })
   }
@@ -69,7 +79,6 @@ function str(value: unknown): string {
  * токенами, а не тем, что пришло в запросе.
  */
 export function parseTaskAddEvent(body: Record<string, unknown>): TaskAddEvent | null {
-  const auth = (typeof body.auth === 'object' && body.auth !== null ? body.auth : {}) as Record<string, string>
   const data = (typeof body.data === 'object' && body.data !== null ? body.data : {}) as Record<string, unknown>
 
   const after = (typeof data.FIELDS_AFTER === 'object' && data.FIELDS_AFTER !== null ? data.FIELDS_AFTER : {}) as Record<string, unknown>
@@ -77,17 +86,28 @@ export function parseTaskAddEvent(body: Record<string, unknown>): TaskAddEvent |
 
   const rawId = after.ID ?? after.id ?? before.ID ?? before.id
   const taskId = Number(rawId)
-  const event = str(body.event)
+  const envelope = parseEnvelope(body)
 
-  if (!event || !Number.isInteger(taskId) || taskId <= 0) return null
+  if (!envelope.event || !Number.isInteger(taskId) || taskId <= 0) return null
 
+  return { ...envelope, taskId }
+}
+
+/** Общая шапка любого события портала: имя, домен и токен приложения. */
+export interface EventEnvelope {
+  event: string
+  domain: string
+  memberId: string
+  applicationToken: string
+}
+
+export function parseEnvelope(body: Record<string, unknown>): EventEnvelope {
+  const auth = (typeof body.auth === 'object' && body.auth !== null ? body.auth : {}) as Record<string, string>
   return {
-    event: event.toUpperCase(),
+    event: str(body.event).toUpperCase(),
     domain: str(auth.domain),
     memberId: str(auth.member_id),
     applicationToken: str(auth.application_token ?? body.application_token),
-    taskId,
-    auth,
   }
 }
 

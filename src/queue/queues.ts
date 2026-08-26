@@ -2,7 +2,7 @@
  * Очереди BullMQ. Событие Битрикс24 не ретраится (docs/B24_EVENTS.md), поэтому
  * приём и обработка разъезжаются здесь: обработчик кладёт задание и отвечает 200.
  */
-import { Queue, Worker, type ConnectionOptions, type Job } from 'bullmq'
+import { Queue, Worker, type ConnectionOptions } from 'bullmq'
 import IORedis from 'ioredis'
 
 export const TASK_EVENTS_QUEUE = 'task-events'
@@ -68,8 +68,14 @@ export function jobId(domain: string, taskId: number): string {
   return `${domain}--${taskId}`
 }
 
+/** То, что нам нужно знать о задании очереди, чтобы понять, будет ли ещё попытка. */
+export interface JobAttempt {
+  attemptsMade: number
+  opts?: { attempts?: number }
+}
+
 /** Последняя ли это попытка — от этого зависит, будить ли человека. */
-export function isLastAttempt(job: Pick<Job, 'attemptsMade' | 'opts'>): boolean {
+export function isLastAttempt(job: JobAttempt): boolean {
   const attempts = job.opts?.attempts ?? 1
   return job.attemptsMade + 1 >= attempts
 }

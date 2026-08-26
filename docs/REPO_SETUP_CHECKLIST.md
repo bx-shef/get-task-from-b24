@@ -61,9 +61,9 @@ git push origin :main
 Чтобы Dependabot мог открывать PR: **Settings → Actions → General → Workflow
 permissions** → ☑ **Allow GitHub Actions to create and approve pull requests**.
 
-> ⬜ В `dependabot.yml` сейчас включён только экосистема `github-actions` — манифестов
-> пакетов и `Dockerfile` в репозитории ещё нет. Появится стек — раскомментируйте
-> соответствующие блоки, иначе Dependabot будет ругаться на отсутствующий манифест.
+> ⚠ У `node` в `dependabot.yml` мажорные обновления в `ignore`: из образов node:25+
+> убран corepack (`RUN corepack enable` → exit 127). У `typescript` — по той же
+> причине: `typescript-eslint` не работает с TS 7, и на нём линт не запускается вовсе.
 
 ## 5. Проверка
 

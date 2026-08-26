@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseBody, parseInstallEvent, parseTaskAddEvent, unflatten } from '../src/b24/eventPayload.js'
+import { parseBody, parseEnvelope, parseInstallEvent, parseTaskAddEvent, unflatten } from '../src/b24/eventPayload.js'
 
 const formBody = [
   'event=ONTASKADD',
@@ -14,6 +14,31 @@ describe('unflatten', () => {
   it('раскладывает скобочные ключи', () => {
     expect(unflatten({ 'data[FIELDS_AFTER][ID]': '555', 'auth[domain]': 'a.ru' }))
       .toEqual({ data: { FIELDS_AFTER: { ID: '555' } }, auth: { domain: 'a.ru' } })
+  })
+})
+
+describe('unflatten — загрязнение прототипа', () => {
+  // ⚠ Найдено ревью и воспроизведено прогоном: `auth[__proto__][polluted]=yes` писал в
+  // Object.prototype всего процесса. Разбор идёт ДО сверки application_token, то есть
+  // сделать это мог кто угодно.
+  it('__proto__ не попадает в прототип', () => {
+    unflatten({ 'auth[__proto__][polluted]': 'yes' })
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined()
+  })
+
+  it('constructor и prototype тоже отбрасываются', () => {
+    unflatten({ 'a[constructor][prototype][x]': '1', 'b[prototype][y]': '2' })
+    expect(({} as Record<string, unknown>).x).toBeUndefined()
+    expect(({} as Record<string, unknown>).y).toBeUndefined()
+  })
+
+  it('через parseBody тоже не проходит', () => {
+    parseBody('application/x-www-form-urlencoded', 'data%5B__proto__%5D%5Bboom%5D=1')
+    expect(({} as Record<string, unknown>).boom).toBeUndefined()
+  })
+
+  it('обычные ключи не пострадали', () => {
+    expect(unflatten({ 'auth[domain]': 'a.ru' })).toEqual({ auth: { domain: 'a.ru' } })
   })
 })
 
@@ -93,5 +118,30 @@ describe('parseInstallEvent', () => {
   it('нет client_endpoint — собираем из домена', () => {
     const parsed = parseInstallEvent({ auth: { ...install.auth, client_endpoint: '' } })
     expect(parsed?.clientEndpoint).toBe('https://client.bitrix24.ru/rest/')
+  })
+})
+
+describe('parseEnvelope', () => {
+  // ⚠ Шапка разбирается отдельно от полей задачи: у ONAPPUNINSTALL нет id задачи, и
+  // разбор «как события о задаче» отбрасывал бы его как непонятое — портал числился
+  // бы подключённым после удаления приложения.
+  it('читает имя события, домен и токен без полей задачи', () => {
+    expect(parseEnvelope({
+      event: 'ONAPPUNINSTALL',
+      auth: { domain: 'client.bitrix24.ru', member_id: 'm', application_token: 'tok' },
+    })).toEqual({
+      event: 'ONAPPUNINSTALL',
+      domain: 'client.bitrix24.ru',
+      memberId: 'm',
+      applicationToken: 'tok',
+    })
+  })
+
+  it('имя события приводится к верхнему регистру', () => {
+    expect(parseEnvelope({ event: 'onTaskAdd' }).event).toBe('ONTASKADD')
+  })
+
+  it('пустое тело не роняет разбор', () => {
+    expect(parseEnvelope({})).toEqual({ event: '', domain: '', memberId: '', applicationToken: '' })
   })
 })

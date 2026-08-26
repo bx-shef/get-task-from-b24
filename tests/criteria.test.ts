@@ -20,6 +20,18 @@ describe('matchesTitlePrefix', () => {
     expect(matchesTitlePrefix('Срочно #support авария')).toBe(false)
     expect(matchesTitlePrefix('supportная задача')).toBe(false)
   })
+
+  // ⚠ Найдено ревью: голый startsWith тащил «#supportive маркетинг» в перенос и обрезал
+  // название до «ive маркетинг».
+  it('слово, начинающееся с префикса, — не префикс', () => {
+    expect(matchesTitlePrefix('#supportive маркетинг')).toBe(false)
+    expect(matchesTitlePrefix('#support2 авария')).toBe(false)
+  })
+
+  it('префикс без хвоста — всё ещё префикс', () => {
+    expect(matchesTitlePrefix('#support')).toBe(true)
+    expect(matchesTitlePrefix('#support: авария')).toBe(true)
+  })
 })
 
 describe('stripTitlePrefix', () => {

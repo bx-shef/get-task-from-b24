@@ -38,6 +38,12 @@ describe('unwrapTask', () => {
     expect(unwrapTask({ id: 5 })).toEqual({ id: 5 })
   })
 
+  // ⚠ REST v3 объявляет в ответе и task, и item. Без второго смена формы ответа
+  // означала бы не ретраи, а окончательную потерю каждой задачи (BAD_TASK неповторяем).
+  it('понимает обёртку item', () => {
+    expect(unwrapTask({ item: { id: 5 } })).toEqual({ id: 5 })
+  })
+
   it('пустой ответ — повторяемая ошибка', () => {
     expect(() => unwrapTask(undefined)).toThrow(/без задачи/)
   })

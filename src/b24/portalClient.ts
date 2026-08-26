@@ -18,16 +18,29 @@ export interface PortalAccess {
   encKey: string
 }
 
-async function refreshAndStore(access: PortalAccess, portal: PortalConfig, stored: PortalAuth & { domain: string }): Promise<Auth> {
-  const fresh = await refreshTokens(stored.serverEndpoint, portal.clientId, portal.clientSecret, stored.refreshToken)
+/**
+ * Продлевает токены и возвращает НОВОЕ состояние.
+ *
+ * ⚠ Возвращает именно состояние, а не только access-токен: Битрикс24 ротирует
+ * `refresh_token`, и прежний после обмена недействителен. Раньше вторая попытка
+ * продления брала `stored` с уже потраченным токеном — портал отвечал отказом, и
+ * ошибка звучала как «клиенту надо переустановить приложение», хотя переустановка
+ * не нужна. Найдено ревью.
+ */
+async function refreshAndStore(
+  access: PortalAccess,
+  portal: PortalConfig,
+  current: PortalAuth,
+): Promise<PortalAuth> {
+  const fresh = await refreshTokens(current.serverEndpoint, portal.clientId, portal.clientSecret, current.refreshToken)
   const auth: PortalAuth = {
     accessToken: fresh.accessToken,
     refreshToken: fresh.refreshToken,
-    clientEndpoint: stored.clientEndpoint,
-    serverEndpoint: stored.serverEndpoint,
+    clientEndpoint: current.clientEndpoint,
+    serverEndpoint: current.serverEndpoint,
   }
   await updateAuth(access.pool, portal.domain, auth, fresh.expiresAt, access.encKey)
-  return { accessToken: auth.accessToken, clientEndpoint: auth.clientEndpoint }
+  return auth
 }
 
 /**
@@ -45,20 +58,20 @@ export async function withPortalAuth<T>(
     throw new B24Error(`портал ${portal.domain} не установлен: нет сохранённых токенов`, 'NOT_INSTALLED', false)
   }
 
-  let auth: Auth = { accessToken: stored.accessToken, clientEndpoint: stored.clientEndpoint }
+  let current: PortalAuth = stored
 
   if (stored.expiresAt.getTime() - Date.now() < REFRESH_MARGIN_MS) {
-    auth = await refreshAndStore(access, portal, stored)
+    current = await refreshAndStore(access, portal, current)
   }
 
   try {
-    return await fn(auth)
+    return await fn({ accessToken: current.accessToken, clientEndpoint: current.clientEndpoint })
   } catch (error) {
     // ⚠ Ровно одна повторная попытка: портал мог отозвать токен раньше срока, но
     // бесконечный цикл «протух → продлили → протух» здесь недопустим.
     if (error instanceof B24Error && EXPIRED_TOKEN_CODES.has(error.code)) {
-      const refreshed = await refreshAndStore(access, portal, stored)
-      return await fn(refreshed)
+      const refreshed = await refreshAndStore(access, portal, current)
+      return await fn({ accessToken: refreshed.accessToken, clientEndpoint: refreshed.clientEndpoint })
     }
     throw error
   }

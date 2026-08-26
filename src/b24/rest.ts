@@ -75,10 +75,32 @@ export interface RefreshedTokens {
  * на `/rest/`; сам обмен токенов живёт по `/oauth/token/` того же хоста.
  *
  * ⚠ Хост берём из события, а не хардкодим: у порталов в разных облаках он разный,
- * а зашитый адрес отвалился бы ровно у части клиентов и молча.
+ * а зашитый адрес отвалился бы ровно у части клиентов и молча. Но принимаем его
+ * только из allow-list (`isKnownOauthHost`): адрес из тела запроса — это адрес, куда
+ * уедет `client_secret`, и доверять ему на слово нельзя.
  */
 export function tokenEndpoint(serverEndpoint: string): string {
   return new URL('/oauth/token/', serverEndpoint).toString()
+}
+
+/** Известные хосты сервера авторизации Битрикс24. */
+export const DEFAULT_OAUTH_ENDPOINT = 'https://oauth.bitrix.info/rest/'
+
+/**
+ * ⚠ Без этой проверки посторонний, приславший установку со своим `server_endpoint`,
+ * получал бы `client_id` и `client_secret` портала прямым текстом при первом же
+ * продлении токена (находка ревью).
+ */
+export function isKnownOauthHost(serverEndpoint: string): boolean {
+  let host: string
+  try {
+    const url = new URL(serverEndpoint)
+    if (url.protocol !== 'https:') return false
+    host = url.hostname.toLowerCase()
+  } catch {
+    return false
+  }
+  return host === 'oauth.bitrix.info' || host === 'oauth.bitrix24.tech' || host.endsWith('.bitrix24.tech')
 }
 
 export async function refreshTokens(
@@ -87,15 +109,23 @@ export async function refreshTokens(
   clientSecret: string,
   refreshToken: string,
 ): Promise<RefreshedTokens> {
-  const url = new URL(tokenEndpoint(serverEndpoint))
-  url.searchParams.set('grant_type', 'refresh_token')
-  url.searchParams.set('client_id', clientId)
-  url.searchParams.set('client_secret', clientSecret)
-  url.searchParams.set('refresh_token', refreshToken)
+  // ⚠ POST с телом, а не GET с query: в query-строке `client_secret` осел бы в
+  // access-логах сервера авторизации и любого промежуточного прокси (находка ревью).
+  const body = new URLSearchParams({
+    grant_type: 'refresh_token',
+    client_id: clientId,
+    client_secret: clientSecret,
+    refresh_token: refreshToken,
+  })
 
   let response: Response
   try {
-    response = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS) })
+    response = await fetch(tokenEndpoint(serverEndpoint), {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body,
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    })
   } catch (cause) {
     throw new B24Error(`сеть при продлении токена: ${(cause as Error).message}`, 'NETWORK', true)
   }

@@ -37,15 +37,19 @@ export type TransferOutcome =
   | { status: 'duplicate' }
 
 export interface TransferContext {
-  /** Последняя попытка очереди: только на ней есть смысл будить человека. */
-  lastAttempt: boolean
+  /**
+   * Будет ли ещё попытка. Не булев флаг, а вопрос об ошибке: повтора не будет ни когда
+   * попытки очереди исчерпаны, ни когда ошибка невосстановима («портал не установлен») —
+   * а второе известно только по самой ошибке.
+   */
+  isFinalFailure(error: unknown): boolean
 }
 
 export async function transferTask(
   taskId: number,
   deps: TransferDeps,
   settings: TransferSettings,
-  context: TransferContext = { lastAttempt: false },
+  context: TransferContext = { isFinalFailure: () => false },
 ): Promise<TransferOutcome> {
   const domain = settings.portal.domain
 
@@ -96,12 +100,13 @@ export async function transferTask(
     return { status: 'created', targetTaskId }
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
+    const final = context.isFinalFailure(error)
     await deps.markFailed(domain, taskId, reason).catch(() => {})
-    deps.log('failed', { domain, taskId, reason, lastAttempt: context.lastAttempt })
+    deps.log('failed', { domain, taskId, reason, final })
 
-    // ⚠ Будим человека только когда попытки исчерпаны: сигнал на каждый ретрай
+    // ⚠ Будим человека только когда повтора не будет: сигнал на каждый ретрай
     // приучает не смотреть на сигналы.
-    if (context.lastAttempt) {
+    if (final) {
       await deps.notify(buildFailureMessage({ domain, sourceTaskId: taskId, error: reason })).catch(() => {})
     }
 

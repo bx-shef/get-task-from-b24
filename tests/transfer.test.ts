@@ -43,7 +43,7 @@ describe('transferTask', () => {
     expect(deps.createTask).toHaveBeenCalledWith(expect.objectContaining({
       TITLE: 'Не грузится отчёт',
       RESPONSIBLE_ID: 1,
-      DEADLINE: '2026-08-27T10:00:00.000Z',
+      DEADLINE: '2026-08-27T10:00:00+00:00',
     }))
     expect(deps.markDone).toHaveBeenCalledWith('client.bitrix24.ru', 555, 42)
     expect(vi.mocked(deps.notify).mock.calls[0]?.[0]).toContain('Задача создана')
@@ -93,11 +93,11 @@ describe('transferTask', () => {
     const failing = { createTask: vi.fn(async (): Promise<number> => { throw new Error('таймаут') }) }
 
     const notLast = makeDeps(failing)
-    await expect(transferTask(555, notLast, settings, { lastAttempt: false })).rejects.toThrow()
+    await expect(transferTask(555, notLast, settings, { isFinalFailure: () => false })).rejects.toThrow()
     expect(notLast.notify).not.toHaveBeenCalled()
 
     const last = makeDeps(failing)
-    await expect(transferTask(555, last, settings, { lastAttempt: true })).rejects.toThrow()
+    await expect(transferTask(555, last, settings, { isFinalFailure: () => true })).rejects.toThrow()
     expect(vi.mocked(last.notify).mock.calls[0]?.[0]).toContain('не удался')
   })
 

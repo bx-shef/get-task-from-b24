@@ -1,9 +1,10 @@
 /**
  * Чтение и проверка окружения. Всё, что сервис умеет настраивать, собрано здесь;
- * секретов в коде нет (docs/CLAUDE.md → «Конвенции»).
+ * секретов в коде нет (CLAUDE.md → «Конвенции»).
  */
 import { parsePortals, type PortalConfig } from './domain/portals.js'
 import { DEFAULT_TITLE_PREFIX } from './domain/criteria.js'
+import { encryptSecret } from './crypto.js'
 
 export interface TelegramConfig {
   botToken: string
@@ -75,6 +76,17 @@ export function loadConfig(env: Env = process.env): AppConfig {
     throw new Error('TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID задаются только вместе')
   }
 
+  // ⚠ Ключ проверяем прогоном шифрования прямо здесь. Раньше длину проверял только
+  // сам шифровщик — то есть кривой ключ вскрывался в момент УСТАНОВКИ приложения у
+  // клиента, а не на старте сервиса: клиент видел отказ, чинил это владелец, и оба
+  // узнавали о проблеме в худший момент. Найдено ревью.
+  const tokenEncKey = required(env, 'B24_TOKEN_ENC_KEY')
+  try {
+    encryptSecret('проверка ключа', tokenEncKey)
+  } catch (error) {
+    throw new Error(`B24_TOKEN_ENC_KEY: ${(error as Error).message}`, { cause: error })
+  }
+
   return {
     publicBaseUrl: required(env, 'PUBLIC_BASE_URL').replace(/\/+$/, ''),
     portals: parsePortals(env),
@@ -86,6 +98,6 @@ export function loadConfig(env: Env = process.env): AppConfig {
     telegram: botToken && chatId ? { botToken, chatId } : null,
     databaseUrl: required(env, 'DATABASE_URL'),
     redisUrl: required(env, 'REDIS_URL'),
-    tokenEncKey: required(env, 'B24_TOKEN_ENC_KEY'),
+    tokenEncKey,
   }
 }

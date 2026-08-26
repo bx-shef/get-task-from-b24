@@ -57,10 +57,16 @@ export function parseSourceTask(raw: unknown): SourceTaskFull {
   }
 }
 
-/** Ответ `tasks.task.get` — `{ task: {...} }`; `tasks.task.add` — `{ task: { id } }`. */
+/**
+ * Ответ `tasks.task.get` — `{ task: {...} }`; `tasks.task.add` — `{ task: { id } }`.
+ *
+ * ⚠ Страницы REST v3 объявляют в ответе и `task`, и `item` — читаем оба. Без этого
+ * смена формы ответа означала бы не ретраи, а мгновенную и окончательную потерю
+ * каждой задачи: `parseSourceTask` бросил бы `BAD_TASK` с `retryable: false`.
+ */
 export function unwrapTask(result: unknown): Record<string, unknown> {
-  const wrapper = result as { task?: unknown } | undefined
-  const task = wrapper?.task ?? result
+  const wrapper = result as { task?: unknown; item?: unknown } | undefined
+  const task = wrapper?.task ?? wrapper?.item ?? result
   if (typeof task !== 'object' || task === null) {
     throw new B24Error('портал ответил без задачи', 'NO_TASK', true)
   }
@@ -79,7 +85,9 @@ export function formatUserName(raw: unknown): string | undefined {
 const TASK_SELECT = ['ID', 'TITLE', 'DESCRIPTION', 'CREATED_BY', 'RESPONSIBLE_ID', 'DEADLINE']
 
 export async function fetchSourceTask(auth: Auth, taskId: number): Promise<SourceTaskFull> {
-  const result = await callPortal<unknown>(auth, 'tasks.task.get', { taskId, select: TASK_SELECT })
+  // ⚠ Шлём и `taskId`, и `id`: страница метода перечисляет обязательными оба имени,
+  // и промах именем означал бы отказ на каждой задаче.
+  const result = await callPortal<unknown>(auth, 'tasks.task.get', { taskId, id: taskId, select: TASK_SELECT })
   return parseSourceTask(unwrapTask(result))
 }
 
@@ -93,8 +101,15 @@ export async function fetchSourceTask(auth: Auth, taskId: number): Promise<Sourc
 export async function fetchUserName(auth: Auth, userId: number): Promise<string | undefined> {
   if (!userId) return undefined
   try {
-    const result = await callPortal<unknown[]>(auth, 'user.get', { ID: userId })
-    return formatUserName(result?.[0])
+    // ⚠ Фильтром, а не верхнеуровневым ID: метод возвращает ФИЛЬТРОВАННЫЙ СПИСОК, и
+    // непонятый параметр означает «отдать всех» — тогда в описание попало бы имя
+    // первого сотрудника портала вместо постановщика. Это не падение, а правдоподобно
+    // выглядящая неправда в задаче, которую никто не перепроверит. Найдено ревью.
+    const result = await callPortal<unknown[]>(auth, 'user.get', { filter: { ID: userId } })
+    const user = result?.[0] as Record<string, unknown> | undefined
+    // ⚠ И всё равно сверяем, что вернулся именно он.
+    if (!user || Number(user.ID ?? user.id) !== userId) return undefined
+    return formatUserName(user)
   } catch {
     return undefined
   }
@@ -105,6 +120,29 @@ export async function createTargetTask(webhookUrl: string, fields: TargetTaskFie
   const id = toNumber(pick(unwrapTask(result), 'id', 'ID'))
   if (id === undefined) throw new B24Error('портал не вернул id созданной задачи', 'NO_TASK_ID', true)
   return id
+}
+
+/**
+ * Доказательство, что токены установки выданы НАСТОЯЩИМ порталом.
+ *
+ * ⚠ Это единственная защита `/b24/install`, и без неё роут был дырой (находка ревью):
+ * посторонний слал нам тело с доменом клиента из реестра и своими `access_token`,
+ * `application_token` и `server_endpoint` — мы это сохраняли, после чего (а) настоящие
+ * события клиента получали 401 и терялись навсегда, и (б) продление токена уходило
+ * GET-ом на сервер атакующего вместе с `client_id` и `client_secret` портала.
+ *
+ * ⚠ Адрес вызова строится ИЗ ДОМЕНА РЕЕСТРА, а не из тела запроса. Подделать ответ
+ * можно только владея самим порталом — а это и есть то, что мы проверяем.
+ */
+export async function verifyPortalToken(domain: string, accessToken: string): Promise<string[]> {
+  const info = await callPortal<{ scope?: string | string[] }>(
+    { accessToken, clientEndpoint: `https://${domain}/rest/` },
+    'app.info',
+    {},
+  )
+  const scope = info?.scope
+  if (Array.isArray(scope)) return scope
+  return typeof scope === 'string' ? scope.split(',').map((s) => s.trim()) : []
 }
 
 /** Подписка на событие создания задачи. Повторный вызов безопасен: портал не плодит дубли. */

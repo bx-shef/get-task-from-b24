@@ -52,3 +52,15 @@ describe('loadConfig', () => {
     expect(loadConfig({ ...base, TASK_TITLE_PREFIX: '#help' }).titlePrefix).toBe('#help')
   })
 })
+
+describe('B24_TOKEN_ENC_KEY', () => {
+  // ⚠ Найдено ревью: раньше длину ключа проверял только шифровщик, то есть кривой
+  // ключ вскрывался в момент УСТАНОВКИ приложения у клиента, а не на старте сервиса.
+  it('короткий ключ роняет старт, а не установку у клиента', () => {
+    expect(() => loadConfig({ ...base, B24_TOKEN_ENC_KEY: 'abcdef' })).toThrow(/B24_TOKEN_ENC_KEY.*32 байт/)
+  })
+
+  it('не-hex такой же длины тоже не проходит', () => {
+    expect(() => loadConfig({ ...base, B24_TOKEN_ENC_KEY: 'z'.repeat(64) })).toThrow(/B24_TOKEN_ENC_KEY/)
+  })
+})

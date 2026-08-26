@@ -36,8 +36,8 @@
 corepack enable && pnpm install
 
 cp .env.example .env
-# дописать ключ шифрования токенов и хотя бы один портал клиента:
-echo "B24_TOKEN_ENC_KEY=$(openssl rand -hex 32)" >> .env
+# заполнить в .env ключ шифрования токенов (openssl rand -hex 32) и хотя бы один
+# портал клиента в B24_PORTAL_01
 
 docker compose up -d db redis   # локальные Postgres и Redis
 pnpm dev                        # http://localhost:3000
