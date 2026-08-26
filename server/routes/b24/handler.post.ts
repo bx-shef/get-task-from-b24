@@ -30,7 +30,7 @@ export default defineEventHandler(async (event) => {
   const envelope = parseEnvelope(body)
 
   if (envelope.event !== 'ONTASKADD' && envelope.event !== 'ONAPPUNINSTALL') {
-    log('event-ignored', { event: envelope.event, domain: envelope.domain })
+    log('event-ignored', { b24Event: envelope.event, domain: envelope.domain })
     return { ok: true, ignored: 'event' }
   }
 
@@ -38,7 +38,7 @@ export default defineEventHandler(async (event) => {
   // выглядело как «портал не наш» — при массовом сбое эти два случая неотличимы, а
   // чинятся по-разному. Найдено ревью.
   if (envelope.domain === '') {
-    log('event-no-auth', { event: envelope.event })
+    log('event-no-auth', { b24Event: envelope.event })
     return { ok: true, ignored: 'no_auth' }
   }
 
@@ -46,7 +46,7 @@ export default defineEventHandler(async (event) => {
   // ⚠ Портала нет в реестре — мы его не обслуживаем. Отвечаем 200: ругаться на
   // портал, который нам не поручали, смысла нет, а 500 заставил бы его повторять.
   if (!portal) {
-    log('portal-unsupported', { domain: envelope.domain, event: envelope.event })
+    log('portal-unsupported', { domain: envelope.domain, b24Event: envelope.event })
     return { ok: true, ignored: 'portal' }
   }
 
@@ -54,7 +54,7 @@ export default defineEventHandler(async (event) => {
   const authentic = envelope.applicationToken !== ''
     && (await verifyApplicationToken(pool, portal.domain, envelope.applicationToken))
   if (!authentic) {
-    log('event-rejected', { domain: portal.domain, event: envelope.event })
+    log('event-rejected', { domain: portal.domain, b24Event: envelope.event })
     event.node.res.statusCode = 401
     return { ok: false, error: 'application_token' }
   }

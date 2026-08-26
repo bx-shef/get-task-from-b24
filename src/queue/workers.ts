@@ -28,7 +28,12 @@ import type { AppContext } from '../runtime.js'
 export function log(event: string, data: Record<string, unknown>): void {
   // ⚠ В лог не попадают ни токены, ни содержимое задач клиента (ПДн сотрудников):
   // только домен, идентификаторы и код исхода.
-  console.log(JSON.stringify({ at: new Date().toISOString(), event, ...data }))
+  //
+  // ⚠ Название события ставится ПОСЛЕ данных. Замерено на боевом логе: вызов с
+  // `{ event: 'ONTASKADD' }` в данных затирал метку, и строка `event-rejected`
+  // печаталась как `{"event":"ONTASKADD"}` — то есть диагностика врала о себе, а
+  // разбирать по ней аварию пришлось бы в самый неподходящий момент.
+  console.log(JSON.stringify({ at: new Date().toISOString(), ...data, event }))
 }
 
 /**

@@ -47,7 +47,7 @@ export default defineEventHandler(async (event) => {
   // каждое следующее событие получало бы от нас 401 и терялось, а внешне всё выглядело
   // бы установленным и подписанным. Найдено ревью по сверке с документацией.
   if (parsed.event && parsed.event !== 'ONAPPINSTALL' && parsed.event !== 'ONAPPUPDATE') {
-    log('install-wrong-event', { event: parsed.event })
+    log('install-wrong-event', { b24Event: parsed.event })
     event.node.res.statusCode = 400
     return { ok: false, error: 'wrong_event' }
   }
