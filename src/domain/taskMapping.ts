@@ -71,10 +71,24 @@ export function resolveDeadline(sourceDeadline: string | undefined, now: Date, d
  * сотрудника НАШЕГО портала; id с портала клиента означал бы там другого человека,
  * и подмена прошла бы молча.
  */
+/**
+ * Потолки на текст, приезжающий с чужого портала.
+ *
+ * ⚠ Содержимое задачи пишет сотрудник клиента, а едет оно в НАШ портал и в Telegram.
+ * Без потолка одна задача с мегабайтным описанием превращается в мегабайтный запрос
+ * к `tasks.task.add` и в сообщение, которое Telegram отвергнет целиком.
+ */
+export const MAX_TITLE_LENGTH = 250
+export const MAX_DESCRIPTION_LENGTH = 20_000
+
+export function clamp(text: string, limit: number): string {
+  return text.length <= limit ? text : `${text.slice(0, limit - 1)}…`
+}
+
 export function buildDescription(source: SourceTaskFull, domain: string): string {
   const author = source.createdByName ?? `id ${source.createdBy}`
   return [
-    source.description?.trim() ?? '',
+    clamp(source.description?.trim() ?? '', MAX_DESCRIPTION_LENGTH),
     '',
     '---',
     `Клиент: ${domain}`,
@@ -93,7 +107,7 @@ export interface BuildOptions {
 
 export function buildTargetTask(source: SourceTaskFull, options: BuildOptions): TargetTaskFields {
   return {
-    TITLE: stripTitlePrefix(source.title, options.titlePrefix),
+    TITLE: clamp(stripTitlePrefix(source.title, options.titlePrefix), MAX_TITLE_LENGTH),
     DESCRIPTION: buildDescription(source, options.domain),
     RESPONSIBLE_ID: options.responsibleId,
     DEADLINE: resolveDeadline(source.deadline, options.now, options.defaultDeadlineHours),

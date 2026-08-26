@@ -23,6 +23,18 @@ services:
         condition: service_healthy
     labels:
       com.centurylinklabs.watchtower.enable: 'true'
+    # ⚠ Контейнер смотрит в интернет и принимает POST от кого угодно. Ограничения
+    # не «на всякий случай»: воркеры очереди живут в этом же процессе, поэтому его
+    # падение по памяти означает остановку переносов у всех 20–30 клиентов сразу.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    pids_limit: 256
     networks:
       - default
       - proxy-net
