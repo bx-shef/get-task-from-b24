@@ -26,7 +26,7 @@ vi.mock('../src/store/db.js', () => ({
 
 const { withPortalAuth } = await import('../src/b24/portalClient.js')
 
-const portal: PortalConfig = { domain: 'client.bitrix24.ru', responsibleId: 17, clientId: 'cid', clientSecret: 'sec' }
+const portal: PortalConfig = { domain: 'client.bitrix24.ru', responsibleId: 17, clientId: 'cid', clientSecret: 'sec', groupId: 0 }
 const access = { pool: {} as never, encKey: '0'.repeat(64) }
 
 function stored(expiresInMs: number) {

@@ -1,7 +1,7 @@
 /**
  * Реестр порталов клиентов: читается из переменных окружения `B24_PORTAL_*`.
  *
- * Формат одной строки: `домен,id исполнителя,client_id,client_secret`
+ * Формат одной строки: `домен,id исполнителя,client_id,client_secret[,id группы]`
  *
  * ⚠ Формат выбран НЕ из вкуса, а замерен на живом прогоне. JSON-массив одной
  * переменной разваливается о `source .env` — шелл съедает кавычки; разделитель `|`
@@ -20,6 +20,13 @@ export interface PortalConfig {
   responsibleId: number
   clientId: string
   clientSecret: string
+  /**
+   * Группа (проект) в НАШЕМ портале, куда попадают задачи этого клиента.
+   *
+   * ⚠ `0` — «без группы», и это умолчание. Битрикс24 трактует `GROUP_ID: 0` не как
+   * «не задано», поэтому поле в запрос не кладём вовсе, когда группы нет.
+   */
+  groupId: number
 }
 
 export const PORTAL_ENV_PREFIX = 'B24_PORTAL_'
@@ -44,11 +51,16 @@ export function normalizeDomain(raw: string): string {
 /** Разбирает одну строку реестра. Имя переменной нужно только для текста ошибки. */
 export function parsePortalLine(name: string, line: string): PortalConfig {
   const parts = line.split(',').map((p) => p.trim())
-  if (parts.length !== 4) {
-    throw new Error(`${name}: ожидалось «домен,id исполнителя,client_id,client_secret», получено ${parts.length} полей`)
+  // ⚠ Пятое поле необязательно: строки, заведённые до появления групп, обязаны
+  // продолжать работать. Требовать его — значит уронить сервис у всех клиентов сразу
+  // при обновлении, а группа нужна не каждому.
+  if (parts.length !== 4 && parts.length !== 5) {
+    throw new Error(
+      `${name}: ожидалось «домен,id исполнителя,client_id,client_secret[,id группы]», получено ${parts.length} полей`,
+    )
   }
 
-  const [rawDomain, rawResponsible, clientId, clientSecret] = parts as [string, string, string, string]
+  const [rawDomain, rawResponsible, clientId, clientSecret, rawGroup] = parts as [string, string, string, string, string | undefined]
   const domain = normalizeDomain(rawDomain)
   const responsibleId = Number(rawResponsible)
 
@@ -60,7 +72,12 @@ export function parsePortalLine(name: string, line: string): PortalConfig {
     throw new Error(`${name}: не указаны client_id или client_secret локального приложения`)
   }
 
-  return { domain, responsibleId, clientId, clientSecret }
+  const groupId = rawGroup === undefined || rawGroup === '' ? 0 : Number(rawGroup)
+  if (!Number.isInteger(groupId) || groupId < 0) {
+    throw new Error(`${name}: id группы должен быть неотрицательным целым (0 — без группы), получено «${rawGroup}»`)
+  }
+
+  return { domain, responsibleId, clientId, clientSecret, groupId }
 }
 
 /** Собирает реестр из всех переменных `B24_PORTAL_*`. Пустой реестр — отказ обслуживать всех. */

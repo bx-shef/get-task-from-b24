@@ -30,6 +30,8 @@ export interface TransferSettings {
   targetResponsibleId: number
   titlePrefix: string
   defaultDeadlineHours: number
+  /** Код поля у нас, куда писать ID задачи клиента. */
+  sourceTaskField?: string | null
 }
 
 export type TransferOutcome =
@@ -90,6 +92,9 @@ export async function transferTask(
       now: deps.now(),
       defaultDeadlineHours: settings.defaultDeadlineHours,
       titlePrefix: settings.titlePrefix,
+      // Группа задаётся ПО КЛИЕНТУ: у каждого своя, и это пятое поле в реестре.
+      groupId: settings.portal.groupId,
+      sourceTaskField: settings.sourceTaskField,
     })
 
     created = await deps.createTask(fields)

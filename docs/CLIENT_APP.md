@@ -83,8 +83,12 @@ event.bind(event: "onTaskAdd", handler: "https://<наш-домен>/b24/handler
 
 ```
 B24_PORTAL_01=client-one.bitrix24.ru,17,local.xxxxxxxx,xxxxxxxx
-B24_PORTAL_02=client-two.bitrix24.ru,42,local.yyyyyyyy,yyyyyyyy
+B24_PORTAL_02=client-two.bitrix24.ru,42,local.yyyyyyyy,yyyyyyyy,7
 ```
+
+Пятое поле — **группа (проект) в нашем портале**, куда попадают задачи этого клиента.
+Пусто или `0` — без группы. Правится целями `make client-add` / `client-disable`
+(docs/DEPLOY.md), а не руками.
 
 ⚠ **Ни JSON, ни `|` — оба ломаются молча, замерено живым прогоном.** JSON-массив одной
 переменной разваливается о `source .env` (шелл съедает кавычки), разделитель `|` там же
@@ -105,3 +109,5 @@ B24_PORTAL_02=client-two.bitrix24.ru,42,local.yyyyyyyy,yyyyyyyy
 2. `client_id` и `client_secret` заведённого локального приложения.
 3. **Id «особого» ответственного** — по нему отбираются задачи на перенос
    (`user.get` в портале, либо ссылка на профиль сотрудника: id виден в адресе).
+
+Со своей стороны заводим строку в реестре и, если нужно, группу для его задач.

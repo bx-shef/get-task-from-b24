@@ -25,6 +25,7 @@ const config: AppConfig = {
   titlePrefix: '#support',
   defaultDeadlineHours: 24,
   telegram: null,
+  targetSourceTaskField: null,
   databaseUrl: DATABASE_URL,
   redisUrl: REDIS_URL,
   tokenEncKey: '0'.repeat(64),

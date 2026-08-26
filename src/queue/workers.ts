@@ -93,6 +93,7 @@ export function startWorkers(ctx: AppContext): { tasks: Worker; notifications: W
         targetResponsibleId: config.targetResponsibleId,
         titlePrefix: config.titlePrefix,
         defaultDeadlineHours: config.defaultDeadlineHours,
+        sourceTaskField: config.targetSourceTaskField,
       },
       { isFinalFailure: (error) => isFinalFailure(job, error) },
     )

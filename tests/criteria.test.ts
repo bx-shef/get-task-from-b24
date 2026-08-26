@@ -7,6 +7,7 @@ const portal: PortalConfig = {
   responsibleId: 17,
   clientId: 'a',
   clientSecret: 'b',
+  groupId: 0,
 }
 
 describe('matchesTitlePrefix', () => {

@@ -105,3 +105,38 @@ describe('потолки на чужой текст', () => {
     expect(fields.TITLE.length).toBeLessThanOrEqual(MAX_TITLE_LENGTH)
   })
 })
+
+describe('группа у нас', () => {
+  const base = { domain: 'client.bitrix24.ru', responsibleId: 1, now, defaultDeadlineHours: 24 }
+
+  // ⚠ GROUP_ID: 0 для Битрикс24 — это значение, а не «не задано». Слать его вслепую
+  // значит спорить с порталом о том, чего мы не просили.
+  it('без группы поля в запросе нет вовсе', () => {
+    expect(buildTargetTask(source, base)).not.toHaveProperty('GROUP_ID')
+    expect(buildTargetTask(source, { ...base, groupId: 0 })).not.toHaveProperty('GROUP_ID')
+  })
+
+  it('с группой поле проставляется', () => {
+    expect(buildTargetTask(source, { ...base, groupId: 42 }).GROUP_ID).toBe(42)
+  })
+})
+
+describe('ID задачи клиента в поле у нас', () => {
+  const base = { domain: 'client.bitrix24.ru', responsibleId: 1, now, defaultDeadlineHours: 24 }
+
+  it('код не задан — поля нет', () => {
+    expect(buildTargetTask(source, base).UF_AUTO_1).toBeUndefined()
+  })
+
+  // ⚠ Числом, а не строкой: по этому полю задачу ищут, и «555» вместо 555 ломает фильтры.
+  it('код задан — приезжает id задачи клиента числом', () => {
+    const fields = buildTargetTask(source, { ...base, sourceTaskField: 'UF_AUTO_123456' })
+    expect(fields.UF_AUTO_123456).toBe(555)
+  })
+
+  // ⚠ Значение приходит из окружения и становится КЛЮЧОМ в теле запроса к порталу.
+  it('не-код игнорируется, а не подставляется в запрос', () => {
+    const fields = buildTargetTask(source, { ...base, sourceTaskField: 'DEADLINE' })
+    expect(fields.DEADLINE).toBe('2026-08-27T12:00:00+00:00')
+  })
+})

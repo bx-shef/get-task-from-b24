@@ -18,6 +18,23 @@ export interface TargetTaskFields {
   DESCRIPTION: string
   RESPONSIBLE_ID: number
   DEADLINE: string
+  /** Группа (проект) у нас. Отсутствует, когда группа не задана. */
+  GROUP_ID?: number
+  /** Пользовательские поля (`UF_*`) кладутся по коду из настроек. */
+  [userField: string]: unknown
+}
+
+/**
+ * Код пользовательского поля обязан выглядеть как код пользовательского поля.
+ *
+ * ⚠ Значение приходит из окружения и подставляется КЛЮЧОМ в тело запроса к порталу.
+ * Без проверки опечатка вроде `UF_ID, DEADLINE` молча добавила бы в запрос поле,
+ * которого никто не просил, а разбираться пришлось бы по странному поведению задач.
+ */
+export const USER_FIELD_PATTERN = /^UF_[A-Z0-9_]+$/
+
+export function isUserFieldCode(code: string): boolean {
+  return USER_FIELD_PATTERN.test(code)
 }
 
 /**
@@ -103,13 +120,33 @@ export interface BuildOptions {
   now: Date
   defaultDeadlineHours: number
   titlePrefix?: string
+  /** `0` или отсутствие — задача заводится без группы. */
+  groupId?: number
+  /**
+   * Код поля у нас, куда положить ID задачи клиента (например `UF_AUTO_123456`).
+   * Пусто — поле не заполняется.
+   */
+  sourceTaskField?: string | null
 }
 
 export function buildTargetTask(source: SourceTaskFull, options: BuildOptions): TargetTaskFields {
-  return {
+  const fields: TargetTaskFields = {
     TITLE: clamp(stripTitlePrefix(source.title, options.titlePrefix), MAX_TITLE_LENGTH),
     DESCRIPTION: buildDescription(source, options.domain),
     RESPONSIBLE_ID: options.responsibleId,
     DEADLINE: resolveDeadline(source.deadline, options.now, options.defaultDeadlineHours),
   }
+
+  // ⚠ Поле добавляется только когда группа задана. `GROUP_ID: 0` — это не «без
+  // группы» для Битрикс24, а значение, и слать его вслепую значит спорить с порталом
+  // о том, чего мы не просили.
+  if (options.groupId && options.groupId > 0) fields.GROUP_ID = options.groupId
+
+  // ⚠ ID задачи клиента — числом, а не строкой: по этому полю задачу ищут и
+  // сопоставляют, и «120005» вместо 120005 ломает фильтры на стороне портала.
+  if (options.sourceTaskField && isUserFieldCode(options.sourceTaskField)) {
+    fields[options.sourceTaskField] = source.id
+  }
+
+  return fields
 }

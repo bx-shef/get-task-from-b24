@@ -5,6 +5,7 @@
 import { parsePortals, type PortalConfig } from './domain/portals.js'
 import { DEFAULT_TITLE_PREFIX } from './domain/criteria.js'
 import { encryptSecret } from './crypto.js'
+import { isUserFieldCode } from './domain/taskMapping.js'
 
 export interface TelegramConfig {
   botToken: string
@@ -20,6 +21,8 @@ export interface AppConfig {
   titlePrefix: string
   defaultDeadlineHours: number
   telegram: TelegramConfig | null
+  /** Код поля у нас, куда пишется ID задачи клиента. `null` — не пишем. */
+  targetSourceTaskField: string | null
   databaseUrl: string
   redisUrl: string
   tokenEncKey: string
@@ -87,6 +90,13 @@ export function loadConfig(env: Env = process.env): AppConfig {
     throw new Error(`B24_TOKEN_ENC_KEY: ${(error as Error).message}`, { cause: error })
   }
 
+  // ⚠ Код поля проверяем на старте: он подставляется КЛЮЧОМ в запрос к порталу, и
+  // опечатка иначе вскрылась бы странным поведением задач, а не отказом сервиса.
+  const sourceTaskField = env.B24_TARGET_UF_SOURCE_TASK?.trim() || null
+  if (sourceTaskField && !isUserFieldCode(sourceTaskField)) {
+    throw new Error(`B24_TARGET_UF_SOURCE_TASK: ожидался код пользовательского поля вида UF_AUTO_123456, получено «${sourceTaskField}»`)
+  }
+
   return {
     publicBaseUrl: required(env, 'PUBLIC_BASE_URL').replace(/\/+$/, ''),
     portals: parsePortals(env),
@@ -96,6 +106,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
     titlePrefix: env.TASK_TITLE_PREFIX?.trim() || DEFAULT_TITLE_PREFIX,
     defaultDeadlineHours: positiveInt(env, 'DEFAULT_DEADLINE_HOURS', 24),
     telegram: botToken && chatId ? { botToken, chatId } : null,
+    targetSourceTaskField: sourceTaskField,
     databaseUrl: required(env, 'DATABASE_URL'),
     redisUrl: required(env, 'REDIS_URL'),
     tokenEncKey,

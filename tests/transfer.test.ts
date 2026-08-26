@@ -4,7 +4,7 @@ import type { SourceTaskFull } from '../src/domain/taskMapping.js'
 import type { ClaimResult } from '../src/store/transfers.js'
 
 const settings: TransferSettings = {
-  portal: { domain: 'client.bitrix24.ru', responsibleId: 17, clientId: 'a', clientSecret: 'b' },
+  portal: { domain: 'client.bitrix24.ru', responsibleId: 17, clientId: 'a', clientSecret: 'b', groupId: 0 },
   targetDomain: 'my.bitrix24.ru',
   targetResponsibleId: 1,
   titlePrefix: '#support',

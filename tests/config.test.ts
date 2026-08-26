@@ -64,3 +64,21 @@ describe('B24_TOKEN_ENC_KEY', () => {
     expect(() => loadConfig({ ...base, B24_TOKEN_ENC_KEY: 'z'.repeat(64) })).toThrow(/B24_TOKEN_ENC_KEY/)
   })
 })
+
+describe('B24_TARGET_UF_SOURCE_TASK', () => {
+  it('код пользовательского поля принимается', () => {
+    expect(loadConfig({ ...base, B24_TARGET_UF_SOURCE_TASK: 'UF_AUTO_123456' }).targetSourceTaskField)
+      .toBe('UF_AUTO_123456')
+  })
+
+  it('не задан — поле не пишем', () => {
+    expect(loadConfig(base).targetSourceTaskField).toBeNull()
+  })
+
+  // ⚠ Значение становится ключом в запросе к порталу: опечатка вскрылась бы странным
+  // поведением задач, а не отказом сервиса.
+  it('мусор роняет старт с внятным текстом', () => {
+    expect(() => loadConfig({ ...base, B24_TARGET_UF_SOURCE_TASK: 'DEADLINE' })).toThrow(/UF_AUTO_123456/)
+    expect(() => loadConfig({ ...base, B24_TARGET_UF_SOURCE_TASK: 'UF_ID, DEADLINE' })).toThrow(/UF_/)
+  })
+})
