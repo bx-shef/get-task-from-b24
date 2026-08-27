@@ -78,7 +78,7 @@ describe('B24_TARGET_UF_SOURCE_TASK', () => {
   // ⚠ Значение становится ключом в запросе к порталу: опечатка вскрылась бы странным
   // поведением задач, а не отказом сервиса.
   it('мусор роняет старт с внятным текстом', () => {
-    expect(() => loadConfig({ ...base, B24_TARGET_UF_SOURCE_TASK: 'DEADLINE' })).toThrow(/UF_AUTO_123456/)
+    expect(() => loadConfig({ ...base, B24_TARGET_UF_SOURCE_TASK: 'DEADLINE' })).toThrow(/UF_SOURCE_TASK_ID/)
     expect(() => loadConfig({ ...base, B24_TARGET_UF_SOURCE_TASK: 'UF_ID, DEADLINE' })).toThrow(/UF_/)
   })
 })

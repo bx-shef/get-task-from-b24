@@ -83,6 +83,13 @@ compose-update:
 
 # ─── Клиенты ─────────────────────────────────────────────────────────
 #
+# ⚠ Портал клиента передаётся как PORTAL=, а НЕ DOMAIN=. Ревью доказало прогоном:
+# `DOMAIN` в .env — это публичный хост сервиса (VIRTUAL_HOST/LETSENCRYPT_HOST), а
+# переменная окружения бьёт .env при интерполяции compose. Достаточно было написать
+# `PORTAL=portal.example.by make client-disable prod-redeploy` — и nginx-proxy начинал
+# маршрутизировать домен КЛИЕНТА вместо нашего: вебхуки Б24 получали бы 502, а события
+# не ретраятся. Одно имя — одно значение.
+#
 # ⚠ Проверки параметров вынесены в переменные и стоят во ВСЕХ целях, а не в одной.
 # Ревью доказало прогоном, во что обходится пропуск: `DOMAIN='.*' make client-disable`
 # комментировал ВЕСЬ реестр, рапортуя об одном клиенте (домен подставлялся в регексп);
@@ -99,7 +106,13 @@ GUARD_KEYS = case "$$ci$$cs" in ''|*[!a-zA-Z0-9._-]*) echo "[make] client_id/cli
 ESCAPE_DOMAIN = esc=$$(printf '%s' "$$d" | sed 's/\./\\./g')
 # Домен приводится к тому же виду, в каком его хранит сервис: без схемы, без хвоста,
 # в нижнем регистре. ⚠ Иначе оператор, добавивший клиента как `Client.Bitrix24.RU`,
-# не смог бы отключить его тем домeном, который видит везде в логах и в базе.
+# не смог бы отключить его тем доменом, который видит везде в логах и в базе.
+#
+# ⚠ Нормализуется ВХОД, а строки в .env могли завестись раньше и в другом регистре —
+# поэтому все выборки по файлу идут регистронезависимо (`grep -i`, `sed …I`). Ревью
+# доказало прогоном: без этого клиента со смешанным регистром нельзя ни отключить, ни
+# включить, ни добавить заново, а `client-forget` обходил проверку «сначала отключи» и
+# снимал токены у портала, который сервис продолжает обслуживать.
 NORMALIZE_DOMAIN = d=$$(printf '%s' "$$d" | tr 'A-Z' 'a-z' | sed -e 's|^https\?://||' -e 's|/.*$$||')
 # ⚠ Все цели правят .env; его отсутствие обязано быть отказом, а не созданием огрызка.
 REQUIRE_ENV = [ -f .env ] || { echo "[make] .env не найден: цель запускают в каталоге деплоя"; exit 1; }
@@ -124,7 +137,7 @@ clients:
 	      name, f[1], f[2], (f[5]==""?"0":f[5]), (off?"[ОТКЛЮЧЁН]":"") } \
 	    END{ if(NR==0 || c==0) print "  реестр пуст" }' .env
 
-## Подключить клиента: DOMAIN=… RESPONSIBLE=… CLIENT_ID=… CLIENT_SECRET=… [GROUP=0] make client-add
+## Подключить клиента: PORTAL=… RESPONSIBLE=… CLIENT_ID=… CLIENT_SECRET=… [GROUP=0] make client-add
 #
 # ⚠ Дубль домена ломает сервис на старте намеренно (какой из двух наборов ключей
 # применится, зависело бы от порядка строк, то есть от случайности) — поэтому
@@ -140,9 +153,9 @@ clients:
 # и не для одного клиента, а для ВСЕХ сразу, потому что нечитаемая строка реестра
 # роняет старт целиком. Отказ обязан приходить в момент правки, а не в момент деплоя.
 client-add:
-	@d="$${DOMAIN:-}"; r="$${RESPONSIBLE:-}"; ci="$${CLIENT_ID:-}"; cs="$${CLIENT_SECRET:-}"; g="$${GROUP:-0}"; \
+	@d="$${PORTAL:-}"; r="$${RESPONSIBLE:-}"; ci="$${CLIENT_ID:-}"; cs="$${CLIENT_SECRET:-}"; g="$${GROUP:-0}"; \
 	if [ -z "$$d" ] || [ -z "$$r" ] || [ -z "$$ci" ] || [ -z "$$cs" ]; then \
-	  echo "Нужно: DOMAIN=portal.example.by RESPONSIBLE=17 CLIENT_ID=local.xxx CLIENT_SECRET=yyy [GROUP=0] make client-add"; exit 1; fi; \
+	  echo "Нужно: PORTAL=portal.example.by RESPONSIBLE=17 CLIENT_ID=local.xxx CLIENT_SECRET=yyy [GROUP=0] make client-add"; exit 1; fi; \
 	$(REQUIRE_ENV); \
 	$(NORMALIZE_DOMAIN); \
 	$(GUARD_DOMAIN); \
@@ -159,33 +172,33 @@ client-add:
 	&& printf 'B24_PORTAL_%s=%s,%s,%s,%s,%s\n' "$$n" "$$d" "$$r" "$$ci" "$$cs" "$$g" >> .env \
 	&& echo "[make] добавлен B24_PORTAL_$$n = $$d (группа $$g). Применить: make prod-redeploy"
 
-## Отключить клиента (строка остаётся закомментированной): DOMAIN=… make client-disable
+## Отключить клиента (строка остаётся закомментированной): PORTAL=… make client-disable
 #
 # ⚠ Токены портала при этом ОСТАЮТСЯ в базе — отключение обратимо. Убрать их совсем:
 # make client-forget.
 client-disable:
-	@d="$${DOMAIN:-}"; [ -n "$$d" ] || { echo "Нужно: DOMAIN=portal.example.by make client-disable"; exit 1; }; \
+	@d="$${PORTAL:-}"; [ -n "$$d" ] || { echo "Нужно: PORTAL=portal.example.by make client-disable"; exit 1; }; \
 	$(REQUIRE_ENV) \
 	&& $(NORMALIZE_DOMAIN) \
 	&& $(GUARD_DOMAIN) \
 	&& $(ESCAPE_DOMAIN) \
-	&& { [ "$$(grep -c "^B24_PORTAL_[A-Za-z0-9_]*=$$esc," .env)" = "1" ] \
+	&& { [ "$$(grep -ci "^B24_PORTAL_[A-Za-z0-9_]*=$$esc," .env)" = "1" ] \
 	     || { echo "[make] для $$d ожидалась ровно одна активная строка. Смотреть: make clients"; exit 1; }; } \
 	&& cp .env ".env.bak-$$(date +%Y%m%d-%H%M%S)" \
-	&& sed -i "s|^\(B24_PORTAL_[A-Za-z0-9_]*=$$esc,.*\)$$|#\1|" .env \
+	&& sed -i "s|^\(B24_PORTAL_[A-Za-z0-9_]*=$$esc,.*\)$$|#\1|I" .env \
 	&& echo "[make] $$d отключён (строка закомментирована). Применить: make prod-redeploy"
 
-## Включить обратно ранее отключённого: DOMAIN=… make client-enable
+## Включить обратно ранее отключённого: PORTAL=… make client-enable
 client-enable:
-	@d="$${DOMAIN:-}"; [ -n "$$d" ] || { echo "Нужно: DOMAIN=portal.example.by make client-enable"; exit 1; }; \
+	@d="$${PORTAL:-}"; [ -n "$$d" ] || { echo "Нужно: PORTAL=portal.example.by make client-enable"; exit 1; }; \
 	$(REQUIRE_ENV) \
 	&& $(NORMALIZE_DOMAIN) \
 	&& $(GUARD_DOMAIN) \
 	&& $(ESCAPE_DOMAIN) \
-	&& { [ "$$(grep -c "^#B24_PORTAL_[A-Za-z0-9_]*=$$esc," .env)" = "1" ] \
+	&& { [ "$$(grep -ci "^#B24_PORTAL_[A-Za-z0-9_]*=$$esc," .env)" = "1" ] \
 	     || { echo "[make] для $$d ожидалась ровно одна отключённая строка. Смотреть: make clients"; exit 1; }; } \
 	&& cp .env ".env.bak-$$(date +%Y%m%d-%H%M%S)" \
-	&& sed -i "s|^#\(B24_PORTAL_[A-Za-z0-9_]*=$$esc,.*\)$$|\1|" .env \
+	&& sed -i "s|^#\(B24_PORTAL_[A-Za-z0-9_]*=$$esc,.*\)$$|\1|I" .env \
 	&& echo "[make] $$d включён. Применить: make prod-redeploy"
 
 ## Забыть клиента совсем: удалить его токены из базы (нужен CONFIRM=1)
@@ -193,27 +206,32 @@ client-enable:
 # ⚠ Необратимо: вернуть портал можно будет только переустановкой приложения САМИМ
 # клиентом. Журнал переносов при этом сохраняется — он история, а не доступ.
 #
-# ⚠ Домен уходит в SQL ПАРАМЕТРОМ (`-v d=… :'d'`), а не склейкой строк. Ревью
-# доказало прогоном, что склейка исполнялась: `DOMAIN="x'; drop table …; --"`
-# уничтожил таблицу, а цель отчиталась успехом. Роль `app` в образе Postgres — ещё и
+# ⚠ Домен уходит в SQL ПАРАМЕТРОМ (`-v d=… :'d'`), а не склейкой строк. Первый цикл
+# ревью доказал прогоном, что склейка исполнялась: `x'; drop table …; --` уничтожил
+# таблицу, а цель отчиталась успехом. Роль `app` в образе Postgres — ещё и
 # суперпользователь, то есть цена такой опечатки не «ошибка», а «уронил базу».
+#
+# ⚠ SQL подаётся на STDIN, а не через `-c`. Второй цикл ревью доказал прогоном, что
+# `psql -c` отправляет строку серверу мимо своего парсера и `:'d'` не раскрывается
+# НИКОГДА — то есть первая версия починки ломала цель совсем. Её ни разу не прогнали
+# против базы, и это ровно тот случай, когда «исправлено» проверяется только чтением.
 #
 # ⚠ Требует, чтобы клиент был СНАЧАЛА отключён. Иначе получалось полусостояние:
 # токенов нет, а строка реестра активна — сервис продолжает принимать события портала
 # и валить каждый перенос на отсутствии токенов. Найдено ревью.
 client-forget:
-	@d="$${DOMAIN:-}"; [ -n "$$d" ] || { echo "Нужно: DOMAIN=portal.example.by CONFIRM=1 make client-forget"; exit 1; }; \
+	@d="$${PORTAL:-}"; [ -n "$$d" ] || { echo "Нужно: PORTAL=portal.example.by CONFIRM=1 make client-forget"; exit 1; }; \
 	$(REQUIRE_ENV) \
 	&& $(NORMALIZE_DOMAIN) \
 	&& $(GUARD_DOMAIN) \
 	&& $(ESCAPE_DOMAIN) \
-	&& { grep -q "^B24_PORTAL_[A-Za-z0-9_]*=$$esc," .env \
-	     && { echo "[make] $$d ещё активен в реестре. Сначала: DOMAIN=$$d make client-disable"; exit 1; } || true; } \
+	&& { grep -qi "^B24_PORTAL_[A-Za-z0-9_]*=$$esc," .env \
+	     && { echo "[make] $$d ещё активен в реестре. Сначала: PORTAL=$$d make client-disable"; exit 1; } || true; } \
 	&& { [ "$${CONFIRM:-}" = "1" ] || { \
 	       echo "[make] удалит токены портала $$d из базы. Вернуть можно будет только переустановкой у клиента."; \
-	       echo "[make] повторите: DOMAIN=$$d CONFIRM=1 make client-forget"; exit 1; }; } \
-	&& $(COMPOSE) exec -T db psql -U app -d app -v ON_ERROR_STOP=1 -v d="$$d" \
-	     -c "delete from portal_tokens where domain = :'"'"'d'"'"';"
+	       echo "[make] повторите: PORTAL=$$d CONFIRM=1 make client-forget"; exit 1; }; } \
+	&& printf '%s\n' "delete from portal_tokens where domain = :'d';" \
+	   | $(COMPOSE) exec -T db psql -U app -d app -v ON_ERROR_STOP=1 -v d="$$d"
 
 # ─── Прод ────────────────────────────────────────────────────────────
 
@@ -265,11 +283,23 @@ portals:
 
 ## Бэкап базы в backup-ГГГГ-ММ-ДД.sql.gz
 #
+# ⚠ Пишем во временный файл и переименовываем только после успеха. Ревью доказало
+# прогоном: при упавшем `pg_dump` редирект успевал создать файл, `gzip` честно паковал
+# пустой поток, цель печатала `ls` и возвращала ноль — то есть вчерашний хороший дамп
+# затирался пустышкой ровно тогда, когда база нездорова.
+#
 # ⚠ Дамп содержит зашифрованные токены порталов, а ключ от них — в .env рядом.
 # Храните их в РАЗНЫХ местах, иначе шифрование не даёт ничего (docs/DEPLOY.md).
 backup:
-	@umask 077; $(COMPOSE) exec -T db pg_dump -U app app | gzip > "backup-$$(date +%F).sql.gz"
-	@ls -lh backup-*.sql.gz | tail -1
+	@f="backup-$$(date +%F).sql.gz"; t="$$f.part"; \
+	umask 077; \
+	$(COMPOSE) exec -T db pg_dump -U app app > "$$t.sql" \
+	  && [ -s "$$t.sql" ] \
+	  && gzip -c "$$t.sql" > "$$t" \
+	  && rm -f "$$t.sql" \
+	  && mv "$$t" "$$f" \
+	  && ls -lh "$$f" \
+	  || { echo "[make] бэкап НЕ снят: pg_dump не отработал"; rm -f "$$t" "$$t.sql"; exit 1; }
 	@echo "[make] ⚠ дамп содержит зашифрованные токены порталов, а ключ от них — в .env рядом."
 	@echo "[make]   Храните их в РАЗНЫХ местах, иначе шифрование не даёт ничего."
 

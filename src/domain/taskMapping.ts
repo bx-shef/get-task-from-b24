@@ -129,10 +129,18 @@ export interface BuildOptions {
   /** `0` или отсутствие — задача заводится без группы. */
   groupId?: number
   /**
-   * Код поля у нас, куда положить ID задачи клиента (например `UF_AUTO_123456`).
+   * Код поля у нас, куда положить ID задачи клиента (например `UF_SOURCE_TASK_ID`).
    * Пусто — поле не заполняется.
    */
   sourceTaskField?: string | null
+  /**
+   * Код поля у нас, куда положить домен портала клиента (`UF_SOURCE_DOMAIN`).
+   *
+   * ⚠ Вместе с ID задачи это ровно то, чего хватает, чтобы пойти обратным ходом и
+   * обновить задачу у клиента: домен даёт адрес портала, id — саму задачу. По
+   * отдельности ни то, ни другое обратного пути не открывает.
+   */
+  sourceDomainField?: string | null
 }
 
 export function buildTargetTask(source: SourceTaskFull, options: BuildOptions): TargetTaskFields {
@@ -165,6 +173,12 @@ export function buildTargetTask(source: SourceTaskFull, options: BuildOptions): 
   // на журнале (`transfers`), а не на портале.
   if (options.sourceTaskField && isUserFieldCode(options.sourceTaskField)) {
     fields[options.sourceTaskField] = source.id
+  }
+
+  // ⚠ Домен — строкой и уже нормализованный: он же служит адресом портала при
+  // обратном вызове, и «Client.Bitrix24.RU» пришлось бы приводить к виду повторно.
+  if (options.sourceDomainField && isUserFieldCode(options.sourceDomainField)) {
+    fields[options.sourceDomainField] = options.domain
   }
 
   return fields

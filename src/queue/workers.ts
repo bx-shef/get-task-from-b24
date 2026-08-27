@@ -35,7 +35,8 @@ export function log(event: string, data: Record<string, unknown>): void {
   // печаталась как `{"event":"ONTASKADD"}` — то есть диагностика врала о себе, а
   // разбирать по ней аварию пришлось бы в самый неподходящий момент.
   // ⚠ `at` и `event` ставятся ПОСЛЕ данных: поле из данных не должно затирать ни
-  // метку события, ни время. Найдено ревью — сначала затиралась метка, потом время.
+  // метку события, ни время. Найдено ревью: в боевом логе строка `event-rejected`
+  // печаталась как {"event":"ONTASKADD"} — диагностика врала о себе.
   console.log(JSON.stringify({ ...data, at: new Date().toISOString(), event }))
 }
 
@@ -75,6 +76,7 @@ export function buildTransferSettings(config: AppConfig, portal: PortalConfig): 
     titlePrefix: config.titlePrefix,
     defaultDeadlineHours: config.defaultDeadlineHours,
     sourceTaskField: config.targetSourceTaskField,
+    sourceDomainField: config.targetSourceDomainField,
   }
 }
 

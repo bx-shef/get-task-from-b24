@@ -23,6 +23,8 @@ export interface AppConfig {
   telegram: TelegramConfig | null
   /** Код поля у нас, куда пишется ID задачи клиента. `null` — не пишем. */
   targetSourceTaskField: string | null
+  /** Код поля у нас, куда пишется домен портала клиента. `null` — не пишем. */
+  targetSourceDomainField: string | null
   databaseUrl: string
   redisUrl: string
   tokenEncKey: string
@@ -94,7 +96,12 @@ export function loadConfig(env: Env = process.env): AppConfig {
   // опечатка иначе вскрылась бы странным поведением задач, а не отказом сервиса.
   const sourceTaskField = env.B24_TARGET_UF_SOURCE_TASK?.trim() || null
   if (sourceTaskField && !isUserFieldCode(sourceTaskField)) {
-    throw new Error(`B24_TARGET_UF_SOURCE_TASK: ожидался код пользовательского поля вида UF_AUTO_123456, получено «${sourceTaskField}»`)
+    throw new Error(`B24_TARGET_UF_SOURCE_TASK: ожидался код пользовательского поля вида UF_SOURCE_TASK_ID, получено «${sourceTaskField}»`)
+  }
+
+  const sourceDomainField = env.B24_TARGET_UF_SOURCE_DOMAIN?.trim() || null
+  if (sourceDomainField && !isUserFieldCode(sourceDomainField)) {
+    throw new Error(`B24_TARGET_UF_SOURCE_DOMAIN: ожидался код пользовательского поля вида UF_SOURCE_DOMAIN, получено «${sourceDomainField}»`)
   }
 
   return {
@@ -107,6 +114,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
     defaultDeadlineHours: positiveInt(env, 'DEFAULT_DEADLINE_HOURS', 24),
     telegram: botToken && chatId ? { botToken, chatId } : null,
     targetSourceTaskField: sourceTaskField,
+    targetSourceDomainField: sourceDomainField,
     databaseUrl: required(env, 'DATABASE_URL'),
     redisUrl: required(env, 'REDIS_URL'),
     tokenEncKey,

@@ -166,3 +166,13 @@ describe('швы: что из настроек доезжает до запро�
     expect(deps.createTask).toHaveBeenCalledWith(expect.objectContaining({ UF_SOURCE_TASK_ID: 555 }))
   })
 })
+
+describe('обратный адрес в задаче у нас', () => {
+  it('домен клиента доезжает до создаваемой задачи', async () => {
+    const deps = makeDeps()
+    await transferTask(555, deps, { ...settings, sourceDomainField: 'UF_SOURCE_DOMAIN' })
+    expect(deps.createTask).toHaveBeenCalledWith(
+      expect.objectContaining({ UF_SOURCE_DOMAIN: 'client.bitrix24.ru' }),
+    )
+  })
+})

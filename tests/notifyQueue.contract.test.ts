@@ -29,6 +29,7 @@ const config: AppConfig = {
   defaultDeadlineHours: 24,
   telegram: null,
   targetSourceTaskField: null,
+  targetSourceDomainField: null,
   databaseUrl: DATABASE_URL,
   redisUrl: REDIS_URL,
   tokenEncKey: '0'.repeat(64),

@@ -41,7 +41,7 @@ check "health отвечает" 200 '"status"' "$(get "$BASE/health")"
 
 # ⚠ Часть проверок имеет смысл только для домена ИЗ РЕЕСТРА: для чужого сервис отвечает
 # «не наш портал» раньше, чем доходит до проверки подлинности. Без этой подсказки прогон
-# давал загадочный провал — замечание второго цикла ревью.
+# давал загадочный провал — замечание ревью.
 registry_probe="$(post "$BASE/b24/handler" "event=ONTASKADD&data[FIELDS_AFTER][ID]=1&auth[domain]=$DOMAIN&auth[application_token]=ПОДДЕЛКА")"
 if [[ "${registry_probe#*|}" == *'"ignored":"portal"'* ]]; then
   echo

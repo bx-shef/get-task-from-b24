@@ -114,6 +114,7 @@ make doctor
 | `PUBLIC_BASE_URL` | указан с ошибкой → подписка `event.bind` уедет на неверный адрес: приложение установится, а события пойдут в никуда |
 | `B24_TARGET_RESPONSIBLE_ID` | задачи создаются на не того сотрудника — они есть, но их никто не видит |
 | `B24_TARGET_UF_SOURCE_TASK` | не задана → ID задачи клиента в задачу не пишется; задана до заведения поля → каждый перенос шлёт порталу несуществующий ключ |
+| `B24_TARGET_UF_SOURCE_DOMAIN` | то же для домена портала клиента; без него обратный ход к задаче клиента невозможен |
 
 ⚠ **`B24_TOKEN_ENC_KEY` — не «просто ключ».** Потеряли или сменили — все 20–30 порталов
 придётся переустанавливать у клиентов. Он идёт в бэкап вместе с базой и отдельно от неё.
@@ -130,10 +131,21 @@ curl -s -X POST "${B24_TARGET_WEBHOOK_URL%/}/task.item.userfield.add.json" \
   -d '{"PARAMS":{"FIELD_NAME":"SOURCE_TASK_ID","USER_TYPE_ID":"double","MULTIPLE":"N","EDIT_FORM_LABEL":{"ru":"ID задачи у клиента"},"XML_ID":"GET_TASK_FROM_B24_SOURCE_ID"}}'
 ```
 
-В ответе придёт `{"result":<id поля>}`. После этого — раскомментировать в `.env`:
+Вторым — поле с доменом портала клиента (вместе с ID оно даёт обратный адрес, по
+которому можно обновить исходную задачу у клиента):
+
+```bash
+curl -s -X POST "${B24_TARGET_WEBHOOK_URL%/}/task.item.userfield.add.json" \
+  -H 'content-type: application/json' \
+  -d '{"PARAMS":{"FIELD_NAME":"SOURCE_DOMAIN","USER_TYPE_ID":"string","MULTIPLE":"N","EDIT_FORM_LABEL":{"ru":"Портал клиента"},"XML_ID":"GET_TASK_FROM_B24_SOURCE_DOMAIN"}}'
+```
+
+В ответе на каждый вызов придёт `{"result":<id поля>}`. После этого — раскомментировать
+в `.env`:
 
 ```
 B24_TARGET_UF_SOURCE_TASK=UF_SOURCE_TASK_ID
+B24_TARGET_UF_SOURCE_DOMAIN=UF_SOURCE_DOMAIN
 ```
 
 и применить: `make prod-redeploy`.
@@ -155,7 +167,7 @@ B24_TARGET_UF_SOURCE_TASK=UF_SOURCE_TASK_ID
 в camelCase молча возвращает всё подряд. Не стройте на нём сверку — для этого есть
 журнал `transfers` (`make transfers`).
 
-✅ Заведено на нашем портале 2026-08-26, проверено записью и чтением.
+✅ Оба поля заведены на нашем портале 2026-08-26/27, проверены записью и чтением.
 
 ## Подключение и отключение клиентов
 
@@ -166,17 +178,21 @@ B24_TARGET_UF_SOURCE_TASK=UF_SOURCE_TASK_ID
 
 ```bash
 make self-update
-DOMAIN=portal.example.by RESPONSIBLE=17 CLIENT_ID=local.xxx CLIENT_SECRET=yyy GROUP=0 make client-add
+PORTAL=portal.example.by RESPONSIBLE=17 CLIENT_ID=local.xxx CLIENT_SECRET=yyy GROUP=0 make client-add
 make clients          # кто подключён (секреты не печатаются)
-DOMAIN=portal.example.by make client-disable   # обратимо: строка комментируется
-DOMAIN=portal.example.by make client-enable
-DOMAIN=portal.example.by CONFIRM=1 make client-forget  # необратимо: удаляет токены из базы
+PORTAL=portal.example.by make client-disable   # обратимо: строка комментируется
+PORTAL=portal.example.by make client-enable
+PORTAL=portal.example.by CONFIRM=1 make client-forget  # необратимо: удаляет токены из базы
 make prod-redeploy    # применить правки .env
 ```
 
-⚠ **Параметры передаются ПЕРЕД `make`.** Значение, заданное как `make цель VAR=…`,
-раскрывается до всякого шелла — включая режим `-n`, то есть осторожный «сперва
-посмотрю» детонирует вместо того, чтобы защищать.
+⚠ **Параметры передаются ПЕРЕД `make`** — почему именно так, с замером, написано в
+шапке самого `Makefile`; здесь не дублируем, чтобы не разошлось (однажды уже разошлось
+и описывало гарантию наоборот).
+
+⚠ **Портал клиента передаётся как `PORTAL=`, а не `DOMAIN=`.** `DOMAIN` в `.env` — это
+публичный хост сервиса, и переменная окружения бьёт `.env`: `DOMAIN=…` перед `make`
+переключила бы nginx-proxy на чужой домен, а вебхуки Б24 начали бы получать 502.
 
 ⚠ **`client-disable` оставляет токены портала в базе** — отключение обратимо. Убрать
 доступы совсем — `client-forget`, и тогда вернуть портал сможет только сам клиент

@@ -128,7 +128,8 @@ describe('ID задачи клиента в поле у нас', () => {
     expect(buildTargetTask(source, base).UF_AUTO_1).toBeUndefined()
   })
 
-  // ⚠ Числом, а не строкой: по этому полю задачу ищут, и «555» вместо 555 ломает фильтры.
+  // ⚠ Числом, потому что поле в портале числовое (`double`): тип значения совпадает с
+  // типом поля. Искать по этому полю нельзя — замерено, см. docs/PROCESSING.md.
   it('код задан — приезжает id задачи клиента числом', () => {
     const fields = buildTargetTask(source, { ...base, sourceTaskField: 'UF_AUTO_123456' })
     expect(fields.UF_AUTO_123456).toBe(555)
@@ -138,5 +139,29 @@ describe('ID задачи клиента в поле у нас', () => {
   it('не-код игнорируется, а не подставляется в запрос', () => {
     const fields = buildTargetTask(source, { ...base, sourceTaskField: 'DEADLINE' })
     expect(fields.DEADLINE).toBe('2026-08-27T12:00:00+00:00')
+  })
+})
+
+describe('домен клиента в поле у нас', () => {
+  const base = { domain: 'client.bitrix24.ru', responsibleId: 1, now, defaultDeadlineHours: 24 }
+
+  // ⚠ Домен вместе с ID задачи — это ровно то, чего хватает для обратного хода:
+  // домен даёт адрес портала, id — саму задачу.
+  it('код задан — приезжает домен строкой', () => {
+    const fields = buildTargetTask(source, { ...base, sourceDomainField: 'UF_SOURCE_DOMAIN' })
+    expect(fields.UF_SOURCE_DOMAIN).toBe('client.bitrix24.ru')
+  })
+
+  it('код не задан — поля нет', () => {
+    expect(buildTargetTask(source, base).UF_SOURCE_DOMAIN).toBeUndefined()
+  })
+
+  it('оба поля вместе дают полный обратный адрес', () => {
+    const fields = buildTargetTask(source, {
+      ...base,
+      sourceTaskField: 'UF_SOURCE_TASK_ID',
+      sourceDomainField: 'UF_SOURCE_DOMAIN',
+    })
+    expect(fields).toMatchObject({ UF_SOURCE_TASK_ID: 555, UF_SOURCE_DOMAIN: 'client.bitrix24.ru' })
   })
 })
