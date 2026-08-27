@@ -1,6 +1,6 @@
 .PHONY: help self-update compose-update ps logs logs-tail doctor transfers portals clients \
         client-add client-disable client-enable client-forget \
-        prod-up prod-down prod-pull prod-redeploy backup uf-probe
+        prod-up prod-down prod-pull prod-redeploy backup
 
 # Единственный интерфейс к боевому серверу. На сервере нет ни репозитория, ни pnpm —
 # только docker-compose.prod.yml, этот Makefile и .env (docs/DEPLOY.md).
@@ -280,100 +280,6 @@ transfers:
 portals:
 	@$(COMPOSE) exec -T db psql -U app -d app -c \
 		"select domain, member_id, expires_at, updated_at from portal_tokens order by domain;"
-
-## Перемер: находит ли портал задачу фильтром по UF-полю (TASK=id обязателен)
-#
-# ⚠ Это диагностика одного спорного утверждения, а не рабочая цель. В документации
-# записано, что фильтр `tasks.task.list` по UF-полю не находит задачу; владелец
-# указал, что запрос был неверный. Неверный запрос и сломанный фильтр выглядят
-# одинаково, поэтому спор решается перебором форм запроса, а не рассуждением.
-#
-# ⚠ Скрипт уезжает в контейнер по stdin: на сервере нет ни репозитория, ни файлов
-# скриптов — только этот Makefile. Вебхук в командную строку не попадает: он уже
-# лежит в окружении контейнера.
-uf-probe:
-	@printf '%s' "$$UF_PROBE_JS" | $(COMPOSE) exec -T -e TASK="$(TASK)" app node
-
-define UF_PROBE_JS
-const url = process.env.B24_TARGET_WEBHOOK_URL
-const field = (process.env.B24_TARGET_UF_SOURCE_TASK || 'UF_SOURCE_TASK_ID').trim()
-const taskId = (process.env.TASK || '').trim()
-if (!url) { console.error('нет B24_TARGET_WEBHOOK_URL в окружении контейнера'); process.exit(1) }
-if (!/^[0-9]+/.test(taskId)) { console.error('укажите задачу нашего портала: TASK=1517 make uf-probe'); process.exit(1) }
-
-const root = url.endsWith('/') ? url.slice(0, -1) : url
-const camel = (code) => code.toLowerCase().replace(/_([a-z0-9])/g, (m, c) => c.toUpperCase())
-
-async function call (method, params, asJson) {
-  const init = { method: 'POST', redirect: 'error' }
-  if (asJson) {
-    init.headers = { 'content-type': 'application/json' }
-    init.body = JSON.stringify(params)
-  } else {
-    init.body = new URLSearchParams(params)
-  }
-  try {
-    const res = await fetch(root + '/' + method + '.json', init)
-    return { status: res.status, json: await res.json().catch(() => null) }
-  } catch (e) {
-    return { status: 0, json: null, error: String(e && e.message) }
-  }
-}
-
-function items (json) {
-  const r = json && json.result
-  const list = Array.isArray(r) ? r : (r && (r.tasks || r.items)) || []
-  return Array.isArray(list) ? list : []
-}
-
-const got = await call('tasks.task.get', { taskId, 'select[0]': 'ID', 'select[1]': field })
-const task = (got.json && got.json.result && (got.json.result.task || got.json.result)) || null
-if (!task) {
-  console.error('задача ' + taskId + ' не прочиталась: ' + JSON.stringify(got.json))
-  process.exit(1)
-}
-const value = task[field] !== undefined ? task[field] : task[camel(field)]
-console.log('задача ' + taskId + ', поле ' + field + ' = ' + JSON.stringify(value))
-if (value === undefined || value === null || value === '') {
-  console.error('в поле пусто — возьмите задачу, которая приехала с портала клиента (make transfers)')
-  process.exit(1)
-}
-
-const all = await call('tasks.task.list', { 'select[0]': 'ID' })
-console.log('всего задач видно вебхуку: ' + (all.json && all.json.total))
-console.log('')
-
-const num = Number(value)
-const str = String(value)
-
-// Формы по документации v3: filter — МАССИВ условий ["поле", значение] либо
-// ["поле", "оператор", значение]. Объект {поле: значение} — форма старого API,
-// и именно её я слал в прошлый раз; она оставлена последней для сравнения.
-const variants = [
-  ['v3 массивом, без оператора', { 'filter[0][0]': field, 'filter[0][1]': str, 'select[0]': 'ID', 'select[1]': field }, false],
-  ['v3 массивом, оператор =', { 'filter[0][0]': field, 'filter[0][1]': '=', 'filter[0][2]': str, 'select[0]': 'ID', 'select[1]': field }, false],
-  ['v3 в теле JSON, число', { filter: [[field, num]], select: ['ID', field] }, true],
-  ['v3 в теле JSON, строка', { filter: [[field, str]], select: ['ID', field] }, true],
-  ['v3 в теле JSON, оператор =', { filter: [[field, '=', num]], select: ['ID', field] }, true],
-  ['v3 в теле JSON, camelCase', { filter: [[camel(field), num]], select: ['ID', field] }, true],
-  ['старая форма объектом (мой прошлый запрос)', { ['filter[' + field + ']']: str, 'select[0]': 'ID', 'select[1]': field }, false],
-]
-
-for (const [name, params, asJson] of variants) {
-  const r = await call('tasks.task.list', params, asJson)
-  const found = items(r.json)
-  const ids = found.map((x) => String(x.id || x.ID)).filter(Boolean)
-  const hit = ids.includes(String(taskId))
-  const err = r.error || (r.json && r.json.error_description) || (r.json && r.json.error)
-  const verdict = err ? 'ОШИБКА: ' + err
-    : hit && ids.length === 1 ? 'НАШЁЛ ровно её'
-    : hit ? 'нашёл её, но вместе с ещё ' + (ids.length - 1)
-    : ids.length === 0 ? 'пусто'
-    : 'вернул ' + ids.length + ' чужих (фильтр проигнорирован)'
-  console.log(name.padEnd(42) + ' -> ' + verdict + '  [http ' + r.status + ', total ' + (r.json && r.json.total) + ']')
-}
-endef
-export UF_PROBE_JS
 
 ## Бэкап базы в backup-ГГГГ-ММ-ДД.sql.gz
 #
