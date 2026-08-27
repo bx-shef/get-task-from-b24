@@ -66,6 +66,14 @@ export function parseSourceTask(raw: unknown): SourceTaskFull {
  * каждой задачи: `parseSourceTask` бросил бы `BAD_TASK` с `retryable: false`.
  */
 export function unwrapTask(result: unknown): Record<string, unknown> {
+  // ⚠ Удалённая или недоступная задача приходит как ПУСТОЙ СПИСОК, а не как ошибка —
+  // замерено на боевом портале. Без этой ветки дальше падал `parseSourceTask` с
+  // «нет id, названия или исполнителя», и человек в Telegram читал бы про формат
+  // ответа вместо «задачу удалили».
+  if (Array.isArray(result) && result.length === 0) {
+    throw new B24Error('задача не найдена или недоступна (удалена?)', 'TASK_NOT_FOUND', false)
+  }
+
   const wrapper = result as { task?: unknown; item?: unknown } | undefined
   const task = wrapper?.task ?? wrapper?.item ?? result
   if (typeof task !== 'object' || task === null) {

@@ -60,3 +60,21 @@ describe('formatUserName', () => {
     expect(formatUserName(undefined)).toBeUndefined()
   })
 })
+
+describe('удалённая задача', () => {
+  // ⚠ Замерено на боевом портале: tasks.task.get для удалённой задачи отдаёт ПУСТОЙ
+  // СПИСОК, а не ошибку. Без этой ветки человек читал бы в Telegram про формат ответа
+  // вместо «задачу удалили», а очередь жгла бы попытки на невосстановимом.
+  it('пустой список — внятная невосстановимая ошибка', () => {
+    expect(() => unwrapTask([])).toThrow(/не найдена или недоступна/)
+    try {
+      unwrapTask([])
+    } catch (error) {
+      expect(error).toMatchObject({ code: 'TASK_NOT_FOUND', retryable: false })
+    }
+  })
+
+  it('непустой список задачей не считается, но и не путается с удалением', () => {
+    expect(() => unwrapTask([{ id: 1 }])).not.toThrow(/не найдена/)
+  })
+})

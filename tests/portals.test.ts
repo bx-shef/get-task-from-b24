@@ -13,7 +13,27 @@ describe('normalizeDomain', () => {
 describe('parsePortalLine', () => {
   it('разбирает строку и нормализует домен', () => {
     expect(parsePortalLine('B24_PORTAL_01', ' https://Client.bitrix24.ru/ , 17 , local.a , secret-a '))
-      .toEqual({ domain: 'client.bitrix24.ru', responsibleId: 17, clientId: 'local.a', clientSecret: 'secret-a' })
+      .toEqual({ domain: 'client.bitrix24.ru', responsibleId: 17, clientId: 'local.a', clientSecret: 'secret-a', groupId: 0 })
+  })
+
+  // ⚠ Пятое поле необязательно: строки, заведённые до появления групп, обязаны
+  // продолжать работать — иначе обновление роняет сервис у всех клиентов сразу.
+  it('без пятого поля группа равна нулю', () => {
+    expect(parsePortalLine('B24_PORTAL_01', 'a.ru,1,c,s').groupId).toBe(0)
+    expect(parsePortalLine('B24_PORTAL_01', 'a.ru,1,c,s,').groupId).toBe(0)
+  })
+
+  it('пятым полем задаётся группа у нас', () => {
+    expect(parsePortalLine('B24_PORTAL_01', 'a.ru,1,c,s,42').groupId).toBe(42)
+  })
+
+  it('мусор вместо группы не проходит', () => {
+    expect(() => parsePortalLine('B24_PORTAL_01', 'a.ru,1,c,s,группа')).toThrow(/id группы/)
+    expect(() => parsePortalLine('B24_PORTAL_01', 'a.ru,1,c,s,-1')).toThrow(/id группы/)
+  })
+
+  it('лишние поля — ошибка с внятным текстом', () => {
+    expect(() => parsePortalLine('B24_PORTAL_01', 'a.ru,1,c,s,1,лишнее')).toThrow(/id группы\]/)
   })
 
   it('не хватает поля — ошибка называет переменную и ожидаемый вид', () => {

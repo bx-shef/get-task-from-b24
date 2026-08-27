@@ -15,6 +15,7 @@ set -uo pipefail
 BASE="${BASE:-http://localhost:3000}"
 DOMAIN="${DOMAIN:-client.bitrix24.ru}"
 fails=0
+skipped=0
 
 # имя, ожидаемый код, ожидаемая подстрока тела (или -), фактический «код|тело»
 check() {
@@ -38,6 +39,20 @@ echo "Смоук против $BASE"
 
 check "health отвечает" 200 '"status"' "$(get "$BASE/health")"
 
+# ⚠ Часть проверок имеет смысл только для домена ИЗ РЕЕСТРА: для чужого сервис отвечает
+# «не наш портал» раньше, чем доходит до проверки подлинности. Без этой подсказки прогон
+# давал загадочный провал — замечание ревью.
+registry_probe="$(post "$BASE/b24/handler" "event=ONTASKADD&data[FIELDS_AFTER][ID]=1&auth[domain]=$DOMAIN&auth[application_token]=ПОДДЕЛКА")"
+if [[ "${registry_probe#*|}" == *'"ignored":"portal"'* ]]; then
+  echo
+  echo "  ⚠ Домен $DOMAIN не найден в реестре сервиса."
+  echo "    Проверки подлинности события пропущены: для чужого портала сервис отвечает"
+  echo "    «не наш» раньше, чем сверяет токен. Запустите с DOMAIN из B24_PORTAL_* в .env."
+  echo
+  SKIP_REGISTRY_CHECKS=1
+  skipped=$((skipped + 1))
+fi
+
 # ⚠ Токен установки не подтверждён вызовом на настоящий портал.
 check "установка с непроверенным токеном отвергнута" 403 'not_verified' \
   "$(post "$BASE/b24/install" "event=ONAPPINSTALL&auth[domain]=$DOMAIN&auth[member_id]=m&auth[application_token]=ЧУЖОЙ&auth[access_token]=подделка&auth[refresh_token]=rt&auth[server_endpoint]=https://evil.example/rest/")"
@@ -51,8 +66,9 @@ check "чужой портал в установке неотличим от о�
 check "установка без токена приложения отвергнута" 400 'no_application_token' \
   "$(post "$BASE/b24/install" "event=ONAPPINSTALL&auth[domain]=$DOMAIN&auth[access_token]=at&auth[refresh_token]=rt")"
 
-check "событие с подделанным токеном отвергнуто" 401 'application_token' \
-  "$(post "$BASE/b24/handler" "event=ONTASKADD&data[FIELDS_AFTER][ID]=1&auth[domain]=$DOMAIN&auth[application_token]=ПОДДЕЛКА")"
+if [ -z "${SKIP_REGISTRY_CHECKS:-}" ]; then
+  check "событие с подделанным токеном отвергнуто" 401 'application_token' "$registry_probe"
+fi
 
 check "чужой портал игнорируется молча" 200 '"ignored":"portal"' \
   "$(post "$BASE/b24/handler" 'event=ONTASKADD&data[FIELDS_AFTER][ID]=1&auth[domain]=не-наш.bitrix24.ru&auth[application_token]=t')"
@@ -61,8 +77,11 @@ check "событие без auth отличимо от чужого порта�
   "$(post "$BASE/b24/handler" 'event=ONTASKADD&data[FIELDS_AFTER][ID]=1')"
 
 # ⚠ Тело подаём потоком, а не аргументом: 200 КБ в командной строке curl не помещаются.
+# ⚠ Генерируем средствами самого shell: python3 на боевом сервере может отсутствовать,
+# и тогда проверка молча зависала (замерено на живом сервере).
+big_body() { printf 'x='; head -c 200000 /dev/zero | tr '\0' 'a'; }
 check "тело сверх потолка отбито" 413 'body_too_large' \
-  "$(python3 -c "print('x=' + 'a' * 200000)" | curl -s -w '|%{http_code}' -X POST "$BASE/b24/handler" --data-binary @- | awk -F'|' '{print $NF "|" substr($0, 1, length($0)-length($NF)-1)}')"
+  "$(big_body | curl -s -w '|%{http_code}' -X POST "$BASE/b24/handler" --data-binary @- | awk -F'|' '{print $NF "|" substr($0, 1, length($0)-length($NF)-1)}')"
 
 # ⚠ Раньше здесь проверялось только «процесс жив» — а загрязнение прототипа процесс и
 # не роняет, то есть проверка не могла провалиться по названной причине.
@@ -76,6 +95,14 @@ else
 fi
 
 echo
+# ⚠ Пропуск — НЕ успех. Раньше пропущенная проверка подлинности никак не отражалась
+# в итоге, и прогон выглядел зелёным, хотя самая ценная проверка не выполнялась.
+if [ "$skipped" -gt 0 ]; then
+  echo "Провалов: $fails, ПРОПУЩЕНО проверок: $skipped (домен не из реестра)."
+  echo "Пропуск не считается успехом — перезапустите с DOMAIN из B24_PORTAL_* в .env."
+  exit 1
+fi
+
 if [ "$fails" -eq 0 ]; then
   echo "Всё чисто."
 else

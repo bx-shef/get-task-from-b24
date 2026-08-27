@@ -16,19 +16,28 @@ import {
   type NotificationJob,
   type TaskEventJob,
 } from './queues.js'
-import { transferTask } from '../pipeline/transfer.js'
+import { transferTask, type TransferSettings } from '../pipeline/transfer.js'
 import { withPortalAuth } from '../b24/portalClient.js'
 import { B24Error } from '../b24/errors.js'
 import { createTargetTask, fetchSourceTask, fetchUserName } from '../b24/tasks.js'
 import { claim, markDone, markFailed } from '../store/transfers.js'
-import { findPortal } from '../domain/portals.js'
+import { findPortal, type PortalConfig } from '../domain/portals.js'
 import { sendTelegramMessage } from '../notify/telegram.js'
 import type { AppContext } from '../runtime.js'
+import type { AppConfig } from '../config.js'
 
 export function log(event: string, data: Record<string, unknown>): void {
   // ⚠ В лог не попадают ни токены, ни содержимое задач клиента (ПДн сотрудников):
   // только домен, идентификаторы и код исхода.
-  console.log(JSON.stringify({ at: new Date().toISOString(), event, ...data }))
+  //
+  // ⚠ Название события ставится ПОСЛЕ данных. Замерено на боевом логе: вызов с
+  // `{ event: 'ONTASKADD' }` в данных затирал метку, и строка `event-rejected`
+  // печаталась как `{"event":"ONTASKADD"}` — то есть диагностика врала о себе, а
+  // разбирать по ней аварию пришлось бы в самый неподходящий момент.
+  // ⚠ `at` и `event` ставятся ПОСЛЕ данных: поле из данных не должно затирать ни
+  // метку события, ни время. Найдено ревью: в боевом логе строка `event-rejected`
+  // печаталась как {"event":"ONTASKADD"} — диагностика врала о себе.
+  console.log(JSON.stringify({ ...data, at: new Date().toISOString(), event }))
 }
 
 /**
@@ -49,6 +58,26 @@ export function toQueueError(error: unknown): unknown {
 export function isFinalFailure(job: JobAttempt, error: unknown): boolean {
   if (error instanceof B24Error && !error.retryable) return true
   return isLastAttempt(job)
+}
+
+/**
+ * Сборка настроек переноса из конфигурации и портала.
+ *
+ * ⚠ Вынесена из замыкания намеренно: это ШОВ между настройками и работой, и ревью
+ * показало мутацией, что он был непокрыт — можно было выкинуть проброс группы или
+ * кода UF-поля, и все тесты оставались зелёными. Настройка при этом валидируется на
+ * старте и покрыта юнитами, но до запроса не доезжает: «настройка есть, эффекта нет».
+ */
+export function buildTransferSettings(config: AppConfig, portal: PortalConfig): TransferSettings {
+  return {
+    portal,
+    targetDomain: config.targetDomain,
+    targetResponsibleId: config.targetResponsibleId,
+    titlePrefix: config.titlePrefix,
+    defaultDeadlineHours: config.defaultDeadlineHours,
+    sourceTaskField: config.targetSourceTaskField,
+    sourceDomainField: config.targetSourceDomainField,
+  }
 }
 
 export function startWorkers(ctx: AppContext): { tasks: Worker; notifications: Worker } {
@@ -82,13 +111,7 @@ export function startWorkers(ctx: AppContext): { tasks: Worker; notifications: W
         now: () => new Date(),
         log,
       },
-      {
-        portal,
-        targetDomain: config.targetDomain,
-        targetResponsibleId: config.targetResponsibleId,
-        titlePrefix: config.titlePrefix,
-        defaultDeadlineHours: config.defaultDeadlineHours,
-      },
+      buildTransferSettings(config, portal),
       { isFinalFailure: (error) => isFinalFailure(job, error) },
     )
   }
@@ -102,7 +125,7 @@ export function startWorkers(ctx: AppContext): { tasks: Worker; notifications: W
         throw toQueueError(error)
       }
     },
-    { connection: queues.connection, concurrency: 5 },
+    { connection: queues.connection, prefix: queues.prefix, concurrency: 5 },
   )
 
   const notifications = new Worker<NotificationJob>(
@@ -114,7 +137,7 @@ export function startWorkers(ctx: AppContext): { tasks: Worker; notifications: W
       }
       await sendTelegramMessage(config.telegram, job.data.text)
     },
-    { connection: queues.connection, concurrency: 2 },
+    { connection: queues.connection, prefix: queues.prefix, concurrency: 2 },
   )
 
   for (const [name, worker] of [['tasks', tasks], ['notifications', notifications]] as const) {

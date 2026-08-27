@@ -18,6 +18,29 @@ export interface TargetTaskFields {
   DESCRIPTION: string
   RESPONSIBLE_ID: number
   DEADLINE: string
+  /** Группа (проект) у нас. Отсутствует, когда группа не задана. */
+  GROUP_ID?: number
+  /**
+   * Пользовательские поля кладутся по коду из настроек.
+   *
+   * ⚠ Шаблон `UF_${string}`, а не `string`: открытая сигнатура снимала контроль типов
+   * со ВСЕХ полей сразу — опечатка в имени системного поля перестала бы ловиться
+   * компилятором ради одного пользовательского. Найдено ревью.
+   */
+  [userField: `UF_${string}`]: unknown
+}
+
+/**
+ * Код пользовательского поля обязан выглядеть как код пользовательского поля.
+ *
+ * ⚠ Значение приходит из окружения и подставляется КЛЮЧОМ в тело запроса к порталу.
+ * Без проверки опечатка вроде `UF_ID, DEADLINE` молча добавила бы в запрос поле,
+ * которого никто не просил, а разбираться пришлось бы по странному поведению задач.
+ */
+export const USER_FIELD_PATTERN = /^UF_[A-Z0-9_]+$/
+
+export function isUserFieldCode(code: string): code is `UF_${string}` {
+  return USER_FIELD_PATTERN.test(code)
 }
 
 /**
@@ -103,13 +126,60 @@ export interface BuildOptions {
   now: Date
   defaultDeadlineHours: number
   titlePrefix?: string
+  /** `0` или отсутствие — задача заводится без группы. */
+  groupId?: number
+  /**
+   * Код поля у нас, куда положить ID задачи клиента (например `UF_SOURCE_TASK_ID`).
+   * Пусто — поле не заполняется.
+   */
+  sourceTaskField?: string | null
+  /**
+   * Код поля у нас, куда положить домен портала клиента (`UF_SOURCE_DOMAIN`).
+   *
+   * ⚠ Вместе с ID задачи это ровно то, чего хватает, чтобы пойти обратным ходом и
+   * обновить задачу у клиента: домен даёт адрес портала, id — саму задачу. По
+   * отдельности ни то, ни другое обратного пути не открывает.
+   */
+  sourceDomainField?: string | null
 }
 
 export function buildTargetTask(source: SourceTaskFull, options: BuildOptions): TargetTaskFields {
-  return {
+  const fields: TargetTaskFields = {
     TITLE: clamp(stripTitlePrefix(source.title, options.titlePrefix), MAX_TITLE_LENGTH),
     DESCRIPTION: buildDescription(source, options.domain),
     RESPONSIBLE_ID: options.responsibleId,
     DEADLINE: resolveDeadline(source.deadline, options.now, options.defaultDeadlineHours),
   }
+
+  // ⚠ Поле добавляется только когда группа задана. Ноль порталу не шлём: `GROUP_ID`
+  // в `fields` метода документацией вообще не описан, и слать неописанное поле со
+  // значением, которого у нас нет, — это спорить с порталом о том, чего мы не просили.
+  // ⚠ Неверный id группы портал, судя по документации, молча принимает: отказа среди
+  // описанных ошибок метода нет. Поэтому группа печатается в лог успешного переноса —
+  // иначе задачи уезжали бы в чужую группу, и заметил бы это человек, а не сервис.
+  if (options.groupId && options.groupId > 0) fields.GROUP_ID = options.groupId
+
+  // ⚠ Код здесь проверяется ВТОРОЙ раз: первый — в `loadConfig`, на старте. В бою
+  // сюда мусор не долетает, но функция вызывается и напрямую (тесты, будущие места),
+  // а ключ уезжает в тело запроса к порталу — цена пропуска выше цены лишней проверки.
+  //
+  // ⚠ Числом, потому что поле в портале числовое (`double`) — тип значения совпадает
+  // с типом поля, и только поэтому.
+  //
+  // ⚠ Искать задачу по этому полю НЕЛЬЗЯ, и это замер, а не предположение: фильтр
+  // `tasks.task.list` по `UF_SOURCE_TASK_ID` находит ноль задач при существующем
+  // значении, а в camelCase (`ufSourceTaskId`) молча игнорируется и возвращает всё
+  // подряд. Поле пишется для человека и на будущее; сопоставление переносов держится
+  // на журнале (`transfers`), а не на портале.
+  if (options.sourceTaskField && isUserFieldCode(options.sourceTaskField)) {
+    fields[options.sourceTaskField] = source.id
+  }
+
+  // ⚠ Домен — строкой и уже нормализованный: он же служит адресом портала при
+  // обратном вызове, и «Client.Bitrix24.RU» пришлось бы приводить к виду повторно.
+  if (options.sourceDomainField && isUserFieldCode(options.sourceDomainField)) {
+    fields[options.sourceDomainField] = options.domain
+  }
+
+  return fields
 }

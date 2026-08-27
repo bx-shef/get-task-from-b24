@@ -45,14 +45,33 @@ export interface Queues {
   taskEvents: Queue<TaskEventJob>
   notifications: Queue<NotificationJob>
   connection: ConnectionOptions
+  /** Префикс ключей: боевые и тестовые очереди не должны жить в одном пространстве. */
+  prefix: string
 }
 
-export function createQueues(redisUrl: string): Queues {
+/**
+ * Префикс ключей очередей в Redis.
+ *
+ * ⚠ Значение НЕ читается из окружения намеренно: единственный, кому нужен свой
+ * префикс, — контрактный тест, и он передаёт его аргументом. Строка `QUEUE_PREFIX=` в
+ * `.env` (а он целиком уезжает в контейнер через `env_file`) молча увела бы сервис в
+ * другое пространство ключей: уже принятые задания осиротели бы, и нигде — ни в логе,
+ * ни в `/health` — этого не было бы видно.
+ *
+ * ⚠ Заведён после того, как ревью доказало прогоном: контрактный тест поднимал очереди
+ * с БОЕВЫМИ именами на том же Redis, вычитывал настоящее задание (и терял его — портал
+ * не найден в пустом реестре, задание завершалось успешно) и добивал остаток
+ * `obliterate`. А `pnpm check` по нашим же правилам гоняется перед каждым пушем.
+ */
+export const QUEUE_PREFIX = 'bull'
+
+export function createQueues(redisUrl: string, prefix: string = QUEUE_PREFIX): Queues {
   const connection = createConnection(redisUrl)
   return {
     connection,
-    taskEvents: new Queue<TaskEventJob>(TASK_EVENTS_QUEUE, { connection }),
-    notifications: new Queue<NotificationJob>(NOTIFICATIONS_QUEUE, { connection }),
+    prefix,
+    taskEvents: new Queue<TaskEventJob>(TASK_EVENTS_QUEUE, { connection, prefix }),
+    notifications: new Queue<NotificationJob>(NOTIFICATIONS_QUEUE, { connection, prefix }),
   }
 }
 

@@ -55,7 +55,7 @@ export async function saveInstall(pool: Pool, input: SaveInstallInput, encKey: s
       input.domain,
       input.memberId,
       hashToken(input.applicationToken),
-      encryptSecret(JSON.stringify(input.auth), encKey),
+      encryptSecret(authBlob(input.auth), encKey),
       input.expiresAt,
     ],
   )
@@ -67,7 +67,13 @@ export async function getPortal(pool: Pool, domain: string, encKey: string): Pro
   if (!row) return null
 
   const auth = JSON.parse(decryptSecret(row.auth_enc, encKey)) as PortalAuth
-  return { domain: row.domain, memberId: row.member_id, expiresAt: row.expires_at, ...auth }
+
+  // ⚠ Спред идёт ПЕРВЫМ: колонки таблицы обязаны побеждать содержимое зашифрованного
+  // блока, а не наоборот. Ровно на этом сервис упал в бою: в блок однажды попал
+  // `expiresAt`, JSON превратил его в строку, и она затёрла `Date` из колонки —
+  // `stored.expiresAt.getTime is not a function`. Вылезло не сразу, а через час, при
+  // первом продлении токена. Тот же класс дефекта, что и порядок полей в `log()`.
+  return { ...auth, domain: row.domain, memberId: row.member_id, expiresAt: row.expires_at }
 }
 
 /**
@@ -86,6 +92,21 @@ export async function verifyApplicationToken(pool: Pool, domain: string, token: 
   return tokenMatchesHash(token, hash)
 }
 
+/**
+ * ⚠ В зашифрованный блок кладутся ТОЛЬКО поля `PortalAuth`, по одному, а не спредом
+ * входного объекта. Срок жизни живёт в своей колонке, и его копия внутри блока — это
+ * второй источник правды, который однажды и разошёлся: `JSON.stringify` превратил
+ * `Date` в строку, и она вернулась вместо даты.
+ */
+function authBlob(auth: PortalAuth): string {
+  return JSON.stringify({
+    accessToken: auth.accessToken,
+    refreshToken: auth.refreshToken,
+    clientEndpoint: auth.clientEndpoint,
+    serverEndpoint: auth.serverEndpoint,
+  })
+}
+
 export async function updateAuth(
   pool: Pool,
   domain: string,
@@ -95,7 +116,7 @@ export async function updateAuth(
 ): Promise<void> {
   await pool.query(
     `update portal_tokens set auth_enc = $2, expires_at = $3, updated_at = now() where domain = $1`,
-    [domain, encryptSecret(JSON.stringify(auth), encKey), expiresAt],
+    [domain, encryptSecret(authBlob(auth), encKey), expiresAt],
   )
 }
 

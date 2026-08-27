@@ -30,6 +30,10 @@ export interface TransferSettings {
   targetResponsibleId: number
   titlePrefix: string
   defaultDeadlineHours: number
+  /** Код поля у нас, куда писать ID задачи клиента. */
+  sourceTaskField?: string | null
+  /** Код поля у нас, куда писать домен портала клиента. */
+  sourceDomainField?: string | null
 }
 
 export type TransferOutcome =
@@ -90,11 +94,15 @@ export async function transferTask(
       now: deps.now(),
       defaultDeadlineHours: settings.defaultDeadlineHours,
       titlePrefix: settings.titlePrefix,
+      // Группа задаётся ПО КЛИЕНТУ: у каждого своя, и это пятое поле в реестре.
+      groupId: settings.portal.groupId,
+      sourceTaskField: settings.sourceTaskField,
+      sourceDomainField: settings.sourceDomainField,
     })
 
     created = await deps.createTask(fields)
     await deps.markDone(domain, taskId, created)
-    deps.log('created', { domain, taskId, targetTaskId: created })
+    deps.log('created', { domain, taskId, targetTaskId: created, groupId: fields.GROUP_ID ?? 0 })
 
     // ⚠ Уведомление ставится в очередь отдельным шагом и НЕ роняет перенос: задача уже
     // создана, а повтор задания сходил бы в портал заново и завершился «дублем» —

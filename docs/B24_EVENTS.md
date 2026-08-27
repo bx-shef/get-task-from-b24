@@ -73,7 +73,12 @@
 | `tasks.task.get` | `task` | источник | `src/b24/tasks.ts` (`fetchSourceTask`) | вычитать поля задачи по `ID` из события |
 | `user.get` | `user_brief` | источник | `src/b24/tasks.ts` (`fetchUserName`) | имя постановщика в описание; **необязателен** — без него будет «id N». Вызывается с `filter`, ответ сверяется по id: метод возвращает ФИЛЬТРОВАННЫЙ СПИСОК, и непонятый параметр означает «отдать всех» |
 | `app.info` | — | источник | `src/b24/tasks.ts` (`verifyPortalToken`) | доказательство подлинности установки: вызов уходит на адрес из реестра |
-| `tasks.task.add` | `task` | приёмник | `src/b24/tasks.ts` (`createTargetTask`) | создать задачу-копию |
+| `tasks.task.add` | `task` | приёмник | `src/b24/tasks.ts` (`createTargetTask`) | создать задачу-копию (в т. ч. `GROUP_ID` и поле с ID задачи клиента) |
+| `task.item.userfield.add` | `task` | приёмник | разово, руками | завести поле `UF_SOURCE_TASK_ID` (docs/DEPLOY.md) |
+
+⚠ **Удалённая или недоступная задача приходит ПУСТЫМ СПИСКОМ, а не ошибкой** —
+замерено на боевом портале. Повторять такое нечего: ошибка помечена невосстановимой,
+человек получает «задача не найдена или недоступна», а не рассказ про формат ответа.
 
 ⚠ **Формат даты — `YYYY-MM-DDThh:mm:ss±hh:mm`**, без миллисекунд и без `Z`.
 `toISOString()` даёт и то, и другое: либо метод падает с `ERROR_CORE`, либо `Z`
@@ -111,4 +116,5 @@
 - [Обзор событий задач](https://apidocs.bitrix24.ru/api-reference/tasks/events-tasks/index.html)
 - [`ONTASKADD`](https://apidocs.bitrix24.ru/api-reference/tasks/events-tasks/on-task-add.html)
 - [`tasks.task.add`](https://apidocs.bitrix24.ru/api-reference/tasks/tasks-task-add.html)
+- [`task.item.userfield.add`](https://apidocs.bitrix24.ru/api-reference/tasks/user-field/task-item-userfield-add.html)
 - [Обработчик событий](https://apidocs.bitrix24.ru/api-reference/events/index.html)
