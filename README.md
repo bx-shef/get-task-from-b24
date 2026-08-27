@@ -1,12 +1,14 @@
 # get-task-from-b24
 
-> Last reviewed: 2026-08-26
+> Last reviewed: 2026-08-27
 
 Мелочь, которая принимает вебхуки о создании задач в одном Битрикс24 и заводит
 такую же задачу в другом Битрикс24.
 
-> **Статус:** ✅ работает в бою, первый портал подключён. Срез —
-> [`docs/project-map.md`](docs/project-map.md), что и как переносим —
+> **Статус:** ✅ работает в бою, первый портал подключён; это начало большой системы —
+> [`docs/PRODUCT.md`](docs/PRODUCT.md). Текущий срез —
+> [`docs/project-map.md`](docs/project-map.md), этапы и критерии приёмки —
+> [`docs/ROADMAP.md`](docs/ROADMAP.md), что и как переносим —
 > [`docs/PROCESSING.md`](docs/PROCESSING.md), процесс разработки —
 > [`docs/PROCESS.md`](docs/PROCESS.md).
 > ⬜ Помеченное так — ещё не решено; открытые вопросы собраны в конце `PROCESSING.md`.
@@ -58,7 +60,9 @@ pnpm dev                        # http://localhost:3000
 |---|---|
 | [`CLAUDE.md`](./CLAUDE.md) | карта модулей и конвенции (основной справочник) |
 | [`docs/README.md`](docs/README.md) | индекс всех документов |
-| [`docs/project-map.md`](docs/project-map.md) | карта разработки: цель, шаги, что сделано / сейчас / дальше |
+| [`docs/PRODUCT.md`](docs/PRODUCT.md) | что за продукт целиком и где в нём то, что уже работает |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | этапы: цель, выгоды, критерии приёмки |
+| [`docs/project-map.md`](docs/project-map.md) | карта проекта: где мы внутри этапов, что сделано / сейчас / дальше |
 | [`docs/PROCESS.md`](docs/PROCESS.md) | процесс: ветка → 5 проверяющих → PR → зелёный CI → мерж |
 | [`docs/PROCESSING.md`](docs/PROCESSING.md) | критерии отбора, перенос полей, очередь, Telegram, ошибки |
 | [`docs/B24_EVENTS.md`](docs/B24_EVENTS.md) | контракт события `ONTASKADD` и учёт REST-методов |
@@ -70,8 +74,8 @@ pnpm dev                        # http://localhost:3000
 
 - **В `main` не пушим — только через Pull Request с зелёным CI.** Настройка защиты
   `main` — в [`docs/REPO_SETUP_CHECKLIST.md`](docs/REPO_SETUP_CHECKLIST.md).
-- Каждый PR проходит **панель из 5 проверяющих**, замечания устраняются до мержа —
-  [`docs/PROCESS.md`](docs/PROCESS.md).
+- Каждый PR проходит **панель из 5 проверяющих** (заново после каждой существенной
+  переделки), замечания устраняются до мержа — [`docs/PROCESS.md`](docs/PROCESS.md).
 - Перед пушем — зелёный `pnpm check` (линт + типы + тесты); это же гоняет CI.
   ⚠ `pnpm check` **требует поднятую базу** (`docker compose up -d db redis`): часть тестов
   контрактные и проверяют поведение Postgres, а не заглушки.
