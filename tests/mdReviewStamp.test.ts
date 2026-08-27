@@ -14,24 +14,41 @@ import { describe, expect, it } from 'vitest'
 
 const ROOT = join(import.meta.dirname, '..')
 
-/** Каталоги под `docs/`, которым штамп не нужен: внешние документы как есть. */
-const EXEMPT_DIRS = ['spec']
+/**
+ * Каталоги, которым штамп не нужен: внешние документы как есть. Путь целиком, а не имя:
+ * по имени исключение молча накрыло бы любой `spec` на любой глубине.
+ */
+const EXEMPT_DIRS = [join('docs', 'spec')]
+
+interface Walk {
+  /** Найденные `.md`, относительными путями от корня репозитория. */
+  files: string[]
+  /** Каталоги, которые обход пропустил, — чтобы тест мог сверить их со списком. */
+  skipped: string[]
+}
 
 function markdownFiles(): string[] {
   const inRoot = readdirSync(ROOT).filter((f) => f.endsWith('.md'))
-  return [...inRoot, ...walkDocs('docs')]
+  return [...inRoot, ...walkDocs('docs').files]
 }
 
-function walkDocs(dir: string): string[] {
-  const found: string[] = []
+function walkDocs(dir: string): Walk {
+  const walk: Walk = { files: [], skipped: [] }
   for (const entry of readdirSync(join(ROOT, dir), { withFileTypes: true })) {
+    const path = join(dir, entry.name)
     if (entry.isDirectory()) {
-      if (!EXEMPT_DIRS.includes(entry.name)) found.push(...walkDocs(join(dir, entry.name)))
+      if (EXEMPT_DIRS.includes(path)) {
+        walk.skipped.push(path)
+        continue
+      }
+      const nested = walkDocs(path)
+      walk.files.push(...nested.files)
+      walk.skipped.push(...nested.skipped)
     } else if (entry.name.endsWith('.md')) {
-      found.push(join(dir, entry.name))
+      walk.files.push(path)
     }
   }
-  return found
+  return walk
 }
 
 describe('штамп ревью', () => {
@@ -41,10 +58,10 @@ describe('штамп ревью', () => {
     expect(files.length).toBeGreaterThan(5)
   })
 
-  it('исключение из проверки ровно одно и заявлено явно', () => {
-    // Новый подкаталог в docs/ должен либо проверяться, либо попадать сюда осознанно —
-    // а не оставаться непроверенным из-за формы обхода.
-    expect(EXEMPT_DIRS).toEqual(['spec'])
+  it('обход пропустил ровно docs/spec и ничего больше', () => {
+    // Сверяем не список с самим собой, а то, что обход сделал на реальном дереве:
+    // новый подкаталог в docs/ должен либо проверяться, либо попасть сюда осознанно.
+    expect(walkDocs('docs').skipped).toEqual([join('docs', 'spec')])
     expect(files.some((f) => f.startsWith(join('docs', 'spec')))).toBe(false)
   })
 
