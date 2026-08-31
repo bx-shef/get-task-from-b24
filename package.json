@@ -16,7 +16,7 @@
     "check": "pnpm lint && pnpm typecheck && pnpm test"
   },
   "dependencies": {
-    "bullmq": "^6.2.2",
+    "bullmq": "^6.3.1",
     "ioredis": "^6.0.0",
     "nitropack": "^2.13.4",
     "pg": "^8.23.0",
