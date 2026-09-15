@@ -307,12 +307,19 @@ backfill:
 	$(NORMALIZE_DOMAIN); \
 	$(GUARD_DOMAIN); \
 	case "$$ids" in *[!0-9,]*) echo "[make] TASKS: только цифры и запятые, получено «$$ids»"; exit 1;; esac \
+	&& n=$$(printf '%s' "$$ids" | tr ',' '\n' | grep -c .) \
+	&& { [ "$$n" -le 100 ] \
+	     || { echo "[make] за раз не больше 100 задач (получено $$n): каждое задание дальше идёт в REST клиента, а у него лимит запросов. Дошлите пачками"; exit 1; }; } \
 	&& $(ESCAPE_DOMAIN) \
 	&& { [ "$$(grep -ci "^B24_PORTAL_[A-Za-z0-9_]*=$$esc," .env)" = "1" ] \
 	     || { echo "[make] $$d не найден среди активных клиентов. Смотреть: make clients"; exit 1; }; } \
 	&& printf '%s' "$$BACKFILL_JS" | $(COMPOSE) exec -T \
 	     -e PORTAL="$$d" -e TASKS="$$ids" -e FORCE="$${FORCE:-}" app node
 
+# ⚠ Внутри блока НЕ используйте `$` — ни `$(…)`, ни шаблонные строки `${…}`: make
+# развернёт их как СВОИ переменные, и в контейнер уедет искажённый скрипт (в лучшем
+# случае «unterminated variable reference», в худшем — молча другой код). Поэтому строки
+# здесь склеиваются конкатенацией, а не литералами. Найдено панелью.
 define BACKFILL_JS
 const BULLMQ = '/app/.output/server/node_modules/bullmq/dist/cjs/index.js'
 let Queue
@@ -336,7 +343,20 @@ const queue = new Queue('task-events', {
 let queued = 0
 let skipped = 0
 for (const id of ids) {
+  // Обработчик события кладёт в очередь только положительное целое; backfill обязан
+  // держать тот же контракт, иначе в task-events окажется то, чего там не бывает.
+  const taskId = Number(id)
+  if (!(Number.isInteger(taskId) && taskId > 0)) {
+    console.log(id + ': пропущено, это не похоже на id задачи')
+    skipped++
+    continue
+  }
+
   const key = domain + '--' + id
+  // ⚠ getJob НЕ видит задание, которое уже выполнено и вычищено по removeOnComplete.
+  // Это не дыра: от повторного переноса защищает журнал переносов (claim не занимает
+  // строку, у которой уже есть target_task_id). Здесь — только вежливость к оператору,
+  // чтобы не ставить заново то, что прямо сейчас в работе.
   const known = await queue.getJob(key)
   if (known) {
     const state = await known.getState()
@@ -345,8 +365,17 @@ for (const id of ids) {
       skipped++
       continue
     }
-    await known.remove()
-    console.log(id + ': прежнее задание удалено (' + state + '), ставлю заново')
+    // ⚠ Активное задание удалить нельзя — BullMQ держит на нём блокировку воркера, и
+    // remove() бросает исключение. Без перехвата оно роняло весь батч: остальные id
+    // не ставились, а оператор видел стек вместо причины. Найдено панелью.
+    try {
+      await known.remove()
+      console.log(id + ': прежнее задание удалено (' + state + '), ставлю заново')
+    } catch {
+      console.log(id + ': пропущено, задание сейчас обрабатывается (' + state + ') — форс невозможен, попробуйте позже')
+      skipped++
+      continue
+    }
   }
   await queue.add('transfer', { domain, taskId: Number(id) }, {
     attempts: 5,

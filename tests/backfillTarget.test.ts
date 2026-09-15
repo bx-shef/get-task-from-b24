@@ -8,6 +8,7 @@
  * доставка задач с нового портала будет тихо падать в пустоту. Убрать дубль нельзя
  * (сервер не видит исходников), поэтому его стережёт этот тест.
  */
+import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -60,5 +61,30 @@ describe('цель make backfill', () => {
   it('не пересоздаёт уже известное задание без FORCE', () => {
     expect(script).toContain('const known = await queue.getJob(key)')
     expect(script).toContain("process.env.FORCE === '1'")
+  })
+
+  it('не роняет батч, если задание сейчас обрабатывается', () => {
+    // Активное задание удалить нельзя: BullMQ держит блокировку воркера и бросает
+    // исключение. Без перехвата оно роняло все оставшиеся id.
+    expect(script).toContain('await known.remove()')
+    expect(/try \{[^}]*await known\.remove\(\)/s.test(script)).toBe(true)
+  })
+
+  it('держит тот же контракт по taskId, что и обработчик события', () => {
+    expect(script).toContain('Number.isInteger(taskId) && taskId > 0')
+  })
+
+  it('Makefile разбирается и цель раскрывается', () => {
+    // ⚠ Остальные проверки — текстовые: сломанный `define`/`endef` или лишняя кавычка
+    // прошли бы мимо них, а сломали бы ВЕСЬ Makefile — и `client-add`, и
+    // `prod-redeploy`. Узналось бы это на сервере, в неудачный момент. Найдено панелью.
+    const root = join(import.meta.dirname, '..')
+    const dry = execFileSync('make', ['-n', 'backfill'], {
+      cwd: root,
+      encoding: 'utf8',
+      env: { ...process.env, PORTAL: 'portal.example.by', TASKS: '101' },
+    })
+    expect(dry).toContain('docker compose')
+    expect(dry).toContain('app node')
   })
 })
