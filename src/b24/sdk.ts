@@ -126,6 +126,15 @@ const PERMANENT_SDK_CODE = /^JSSDK_/
 export function toB24Error(error: unknown): B24Error {
   if (error instanceof B24Error) return error
 
+  // ⚠ SDK заворачивает ЛЮБОЕ не-axios исключение, вылетевшее внутри HTTP-вызова, в свою
+  // `AjaxError` с кодом `JSSDK_UNKNOWN_ERROR`, пряча исходное в `originalError`. Для нас
+  // это не мелочь: так терялся код `expired_token`, который бросает наш обработчик
+  // продления, — и слой `withPortalAuth` переставал узнавать «надо продлить токен».
+  // Перенос задачи умирал окончательно там, где чинить было нечего.
+  // Боевой инцидент 2026-09-15: portal.standartno.by, задача 120378.
+  const original = (error as { originalError?: unknown } | null)?.originalError
+  if (original instanceof B24Error) return original
+
   const sdk = error as SdkLikeError
   const code = typeof sdk.code === 'string' && sdk.code ? sdk.code : 'SDK_ERROR'
   const status = typeof sdk.status === 'number' ? sdk.status : 0
