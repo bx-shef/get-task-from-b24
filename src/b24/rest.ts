@@ -15,20 +15,22 @@ export { DEFAULT_OAUTH_ENDPOINT, isKnownOauthHost, tokenEndpoint }
 const TIMEOUT_MS = 20_000
 
 /**
- * ⚠ Клиенты SDK кэшируются по адресу: создание тянет за собой axios-инстанс и менеджер
- * лимитов портала, а нам нужен один на портал, а не один на вызов — иначе учёт лимитов
- * обнулялся бы каждым вызовом и терял смысл.
+ * ⚠ Клиент нашего портала переиспользуется: создание тянет за собой axios-инстанс и
+ * менеджер лимитов портала, а нам нужен один на портал, а не один на вызов — иначе учёт
+ * лимитов обнулялся бы каждым вызовом и терял смысл.
+ *
+ * ⚠ Хранится ПАРОЙ, а не картой «адрес → клиент»: адрес вебхука — это секрет, и делать
+ * из него долгоживущий ключ коллекции незачем. Вебхук у нас ровно один, из конфигурации;
+ * смена адреса просто пересоздаёт клиента. Найдено панелью.
  */
-const hookClients = new Map<string, TypeB24>()
+let hookClient: { url: string; client: TypeB24 } | undefined
 
 /** Вызов метода в НАШЕМ портале через входящий вебхук. */
 export function callWebhook<T>(webhookUrl: string, method: string, params: Record<string, unknown>): Promise<T> {
-  let client = hookClients.get(webhookUrl)
-  if (!client) {
-    client = createHookClient(webhookUrl)
-    hookClients.set(webhookUrl, client)
+  if (hookClient?.url !== webhookUrl) {
+    hookClient = { url: webhookUrl, client: createHookClient(webhookUrl) }
   }
-  return callSdk<T>(client, method, params)
+  return callSdk<T>(hookClient.client, method, params)
 }
 
 /**

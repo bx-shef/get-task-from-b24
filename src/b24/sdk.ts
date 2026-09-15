@@ -102,10 +102,26 @@ interface SdkLikeError {
 }
 
 /**
+ * Ошибки самой библиотеки: повтор их не лечит.
+ *
+ * ⚠ Единственное исключение из правила «нет ответа — повторяем» (см. ниже). Такие коды
+ * означают, что мы неправильно позвали SDK, — это чинится правкой кода, а не ретраем.
+ */
+const PERMANENT_SDK_CODE = /^JSSDK_/
+
+/**
  * Перевод ошибки SDK в нашу.
  *
  * ⚠ Коды протухшего токена помечаются НЕповторяемыми намеренно: повтор с тем же токеном
  * бессмысленен, продлением занимается слой выше (`withPortalAuth`).
+ *
+ * ⚠ **Ошибка без HTTP-статуса считается повторяемой**, и это не мелочь. Прежний слой на
+ * `fetch` любое сетевое исключение бросал как `NETWORK, retryable: true`. У axios внутри
+ * SDK обрыв соединения приходит с кодом ОС (`ECONNREFUSED`, `ENOTFOUND`, `ECONNRESET`) и
+ * без статуса: такой код не входит ни в один наш список, и классификация «по списку»
+ * пометила бы его неповторяемым. Для очереди это `UnrecoverableError` — то есть задача
+ * клиента терялась бы окончательно от обычной недоступности портала, ровно от того,
+ * ради чего очередь и заведена. Найдено панелью и подтверждено прогоном на ECONNREFUSED.
  */
 export function toB24Error(error: unknown): B24Error {
   if (error instanceof B24Error) return error
@@ -115,7 +131,17 @@ export function toB24Error(error: unknown): B24Error {
   const status = typeof sdk.status === 'number' ? sdk.status : 0
   const message = typeof sdk.message === 'string' && sdk.message ? sdk.message : String(error)
 
-  return new B24Error(message, code, EXPIRED_TOKEN_CODES.has(code) ? false : isRetryable(code, status))
+  return new B24Error(message, code, isRetryableSdkError(code, status))
+}
+
+function isRetryableSdkError(code: string, status: number): boolean {
+  if (EXPIRED_TOKEN_CODES.has(code)) return false
+  if (isRetryable(code, status)) return true
+  // Портал ответил (4xx) — виноват запрос, повтор ничего не изменит.
+  if (status > 0) return false
+  if (PERMANENT_SDK_CODE.test(code)) return false
+  // Ответа не было вовсе: сеть, DNS, обрыв. Повторяем — как делал прежний слой.
+  return true
 }
 
 /**

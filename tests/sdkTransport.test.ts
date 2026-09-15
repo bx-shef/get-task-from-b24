@@ -77,10 +77,46 @@ describe('перевод ошибок SDK в наши', () => {
     expect(toB24Error(Object.assign(new Error('bad gateway'), { code: 'SOMETHING', status: 502 })).retryable).toBe(true)
   })
 
+  it('сетевой обрыв — повторяемый: иначе очередь хоронит задачу от недоступности портала', () => {
+    // ⚠ Код ОС без HTTP-статуса: так приходит обрыв соединения через axios. Прежний
+    // слой на fetch помечал любое сетевое исключение повторяемым, и терять это нельзя.
+    for (const code of ['ECONNREFUSED', 'ENOTFOUND', 'ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN']) {
+      expect(toB24Error(Object.assign(new Error('сеть'), { code })).retryable).toBe(true)
+    }
+  })
+
+  it('коды транспорта из SDK — повторяемые', () => {
+    // ⚠ NETWORK_ERROR приходит со статусом 0, а REQUEST_TIMEOUT — с 408, то есть
+    // выглядит как ответ портала, хотя ответа не было. Оба обязаны повторяться, иначе
+    // недоступный или медленный портал хоронит задачу клиента. Найдено панелью.
+    expect(toB24Error(Object.assign(new Error('сеть'), { code: 'NETWORK_ERROR', status: 0 })).retryable).toBe(true)
+    expect(toB24Error(Object.assign(new Error('долго'), { code: 'REQUEST_TIMEOUT', status: 408 })).retryable).toBe(true)
+  })
+
+  it('ошибка самой библиотеки — неповторяемая: ретрай её не лечит', () => {
+    const error = toB24Error(Object.assign(new Error('deprecated'), { code: 'JSSDK_CORE_DEPRECATED_METHOD' }))
+    expect(error.retryable).toBe(false)
+  })
+
+  it('портал ответил 4xx — повтор бессмысленен', () => {
+    expect(toB24Error(Object.assign(new Error('нет метода'), { code: 'ERROR_METHOD_NOT_FOUND', status: 400 })).retryable).toBe(
+      false,
+    )
+  })
+
   it('свою ошибку не переписывает', () => {
     const mine = new B24Error('уже наша', 'NOT_INSTALLED', false)
     expect(toB24Error(mine)).toBe(mine)
   })
+})
+
+describe('недоступный портал', () => {
+  it('ECONNREFUSED доезжает до нас повторяемой ошибкой — проверено живым вызовом', async () => {
+    // Порт 1 на localhost гарантированно закрыт: получаем настоящий сетевой отказ,
+    // а не собранный руками объект ошибки.
+    const client = harden(new B24Hook({ b24Url: 'https://127.0.0.1:1', userId: 1, secret: 's' }))
+    await expect(callSdk(client, 'tasks.task.get', {})).rejects.toMatchObject({ retryable: true })
+  }, 30_000)
 })
 
 describe('разбор ответа портала', () => {
