@@ -16,6 +16,7 @@
     "check": "pnpm lint && pnpm typecheck && pnpm test"
   },
   "dependencies": {
+    "@bitrix24/b24jssdk": "^2.2.0",
     "bullmq": "^6.2.2",
     "ioredis": "^6.0.0",
     "nitropack": "^2.13.4",

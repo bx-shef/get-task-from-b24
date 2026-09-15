@@ -2,71 +2,49 @@
  * Тонкий слой поверх REST Битрикс24: наш портал — через входящий вебхук,
  * портал клиента — по OAuth. Учёт вызываемых методов — docs/B24_EVENTS.md.
  */
-import { B24Error, EXPIRED_TOKEN_CODES, isRetryable } from './errors.js'
+import { B24Error, isRetryable } from './errors.js'
+import { DEFAULT_OAUTH_ENDPOINT, isKnownOauthHost, tokenEndpoint } from './oauthHosts.js'
+import { callSdk, createHookClient, createPortalClient } from './sdk.js'
+import type { TypeB24 } from '@bitrix24/b24jssdk'
 import type { PortalAuth } from '../store/portalTokens.js'
+
+// ⚠ Переэкспорт ради тех, кто уже импортирует это отсюда (обработчик установки):
+// один факт — одно место, но и ломать чужие импорты ради переезда незачем.
+export { DEFAULT_OAUTH_ENDPOINT, isKnownOauthHost, tokenEndpoint }
 
 const TIMEOUT_MS = 20_000
 
-interface B24Response<T> {
-  result?: T
-  error?: string
-  error_description?: string
-}
-
-async function post<T>(url: string, body: Record<string, unknown>): Promise<T> {
-  let response: Response
-  try {
-    response = await fetch(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-      // ⚠ За редиректами не идём. Ревью доказало прогоном: 307 сохраняет метод и тело,
-      // undici идёт за кросс-доменным редиректом молча — и токен портала (а при
-      // продлении и `client_secret`) уезжает на чужой хост, минуя весь allow-list,
-      // который проверяет только ПЕРВЫЙ адрес.
-      redirect: 'error',
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    })
-  } catch (cause) {
-    // ⚠ Сеть — всегда повторяемо: недоступность портала не делает задачу невалидной.
-    throw new B24Error(`сеть: ${(cause as Error).message}`, 'NETWORK', true)
-  }
-
-  const payload = (await response.json().catch(() => ({}))) as B24Response<T>
-
-  if (payload.error) {
-    const code = payload.error
-    throw new B24Error(
-      payload.error_description ?? code,
-      code,
-      EXPIRED_TOKEN_CODES.has(code) ? false : isRetryable(code, response.status),
-    )
-  }
-
-  if (!response.ok) {
-    throw new B24Error(`HTTP ${response.status}`, `HTTP_${response.status}`, isRetryable('', response.status))
-  }
-
-  if (payload.result === undefined) {
-    throw new B24Error('портал ответил без result', 'NO_RESULT', true)
-  }
-
-  return payload.result
-}
+/**
+ * ⚠ Клиент нашего портала переиспользуется: создание тянет за собой axios-инстанс и
+ * менеджер лимитов портала, а нам нужен один на портал, а не один на вызов — иначе учёт
+ * лимитов обнулялся бы каждым вызовом и терял смысл.
+ *
+ * ⚠ Хранится ПАРОЙ, а не картой «адрес → клиент»: адрес вебхука — это секрет, и делать
+ * из него долгоживущий ключ коллекции незачем. Вебхук у нас ровно один, из конфигурации;
+ * смена адреса просто пересоздаёт клиента. Найдено панелью.
+ */
+let hookClient: { url: string; client: TypeB24 } | undefined
 
 /** Вызов метода в НАШЕМ портале через входящий вебхук. */
 export function callWebhook<T>(webhookUrl: string, method: string, params: Record<string, unknown>): Promise<T> {
-  return post<T>(`${webhookUrl.replace(/\/+$/, '')}/${method}.json`, params)
+  if (hookClient?.url !== webhookUrl) {
+    hookClient = { url: webhookUrl, client: createHookClient(webhookUrl) }
+  }
+  return callSdk<T>(hookClient.client, method, params)
 }
 
-/** Вызов метода на портале КЛИЕНТА по OAuth-токену. */
+/**
+ * Вызов метода на портале КЛИЕНТА по OAuth-токену.
+ *
+ * ⚠ Клиент не кэшируется: токен живёт час и меняется продлением, а ключом кэша был бы
+ * сам токен — то есть кэш рос бы и хранил протухшее.
+ */
 export function callPortal<T>(
   auth: Pick<PortalAuth, 'accessToken' | 'clientEndpoint'>,
   method: string,
   params: Record<string, unknown>,
 ): Promise<T> {
-  const base = auth.clientEndpoint.replace(/\/+$/, '')
-  return post<T>(`${base}/${method}.json`, { ...params, auth: auth.accessToken })
+  return callSdk<T>(createPortalClient(auth), method, params)
 }
 
 interface TokenResponse {
@@ -85,51 +63,6 @@ export interface RefreshedTokens {
   accessToken: string
   refreshToken: string
   expiresAt: Date
-}
-
-/**
- * Адрес сервера авторизации приходит в событии (`auth.server_endpoint`) и указывает
- * на `/rest/`; сам обмен токенов живёт по `/oauth/token/` того же хоста.
- *
- * ⚠ Хост берём из события, а не хардкодим: у порталов в разных облаках он разный,
- * а зашитый адрес отвалился бы ровно у части клиентов и молча. Но принимаем его
- * только из allow-list (`isKnownOauthHost`): адрес из тела запроса — это адрес, куда
- * уедет `client_secret`, и доверять ему на слово нельзя.
- */
-export function tokenEndpoint(serverEndpoint: string): string {
-  return new URL('/oauth/token/', serverEndpoint).toString()
-}
-
-/**
- * Сервер авторизации по умолчанию.
- *
- * ⚠ `oauth.bitrix24.tech`, а не `oauth.bitrix.info`: документация называет доверенным
- * именно его — «все операции с секретным кодом приложения должны проводиться
- * исключительно с сервером авторизации oauth.bitrix24.tech». Найдено вторым циклом ревью.
- */
-export const DEFAULT_OAUTH_ENDPOINT = 'https://oauth.bitrix24.tech/rest/'
-
-/** Точный список хостов сервера авторизации. */
-const KNOWN_OAUTH_HOSTS = new Set(['oauth.bitrix24.tech', 'oauth.bitrix.info'])
-
-/**
- * ⚠ Без этой проверки посторонний, приславший установку со своим `server_endpoint`,
- * получал бы `client_id` и `client_secret` портала прямым текстом при первом же
- * продлении токена (находка ревью).
- *
- * ⚠ Список точный, без «любой поддомен `*.bitrix24.tech`»: шире, чем нужно, — значит
- * шире, чем безопасно.
- */
-export function isKnownOauthHost(serverEndpoint: string): boolean {
-  try {
-    const url = new URL(serverEndpoint)
-    // ⚠ Проверяем и то, что в URL нет логина с паролем: `https://oauth.bitrix24.tech@evil.tld/`
-    // имеет hostname `evil.tld`, но глазами читается как доверенный адрес.
-    if (url.protocol !== 'https:' || url.username || url.password) return false
-    return KNOWN_OAUTH_HOSTS.has(url.hostname.toLowerCase())
-  } catch {
-    return false
-  }
 }
 
 export async function refreshTokens(

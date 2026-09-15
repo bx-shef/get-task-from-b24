@@ -44,4 +44,11 @@ describe('B24Error', () => {
     expect(error.retryable).toBe(true)
     expect(error).toBeInstanceOf(Error)
   })
+
+  it('408 повторяем: так SDK помечает наш собственный таймаут', () => {
+    // ⚠ Экстраполяция по смыслу статуса, а не замер: что портал отдаёт 408 сам, мы не
+    // проверяли. Подробности — в комментарии к isRetryable.
+    expect(isRetryable('', 408)).toBe(true)
+    expect(isRetryable('REQUEST_TIMEOUT', 408)).toBe(true)
+  })
 })
