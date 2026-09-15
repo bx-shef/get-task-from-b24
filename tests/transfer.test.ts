@@ -236,9 +236,11 @@ describe('сверка после создания', () => {
     expect(vi.mocked(deps.notify).mock.calls[0]?.[0]).toContain('лишняя удалена')
   })
 
-  // ⚠ Сверка не имеет права уронить перенос — буквально, включая упавший логгер: иначе
-  // наружу возвращался ID только что УДАЛЁННОЙ задачи. Найдено вторым циклом панели.
-  it('логгер упал посреди сверки — перенос всё равно успешен', async () => {
+  // ⚠ Сверка не имеет права уронить перенос — буквально, включая упавший логгер.
+  // Раньше исключение из `deps.log` улетало в общий catch, и сбой САМОЙ СВЕРКИ
+  // записывался как `failed-after-create` — то есть выглядел сбоем переноса, которого
+  // не было. Найдено вторым циклом панели.
+  it('логгер упал посреди сверки — это сбой сверки, а не переноса', async () => {
     const log = vi.fn((event: string) => {
       if (event === 'dedup-duplicate') throw new Error('логгер упал')
     })
@@ -248,6 +250,9 @@ describe('сверка после создания', () => {
     })
 
     expect(await transferTask(555, deps, settings)).toEqual({ status: 'created', targetTaskId: 42 })
+    const events = log.mock.calls.map((c) => c[0])
+    expect(events).toContain('dedup-check-failed')
+    expect(events).not.toContain('failed-after-create')
   })
 
   // ⚠ Сама сверка НЕ имеет права уронить перенос: задача уже создана, а повтор завёл

@@ -1,4 +1,4 @@
-.PHONY: help self-update compose-update ps logs logs-tail doctor queue portals clients \
+.PHONY: help self-update compose-update ps logs logs-tail doctor queue lost portals clients \
         client-add client-disable client-enable client-forget backfill \
         prod-up prod-down prod-pull prod-redeploy backup issues
 
@@ -279,6 +279,14 @@ doctor:
 queue:
 	@printf '%s' "$$QUEUE_JS" | $(COMPOSE) exec -T app node
 
+## События, потерянные при недоступном Redis (в очереди их нет — только в логе)
+#
+# ⚠ Отдельной целью, а не `make logs | grep`: у `logs` стоит `-f`, в пайпе он не
+# завершается, а grep уходит в блочную буферизацию — оператор получает пустой
+# зависший терминал и делает вывод «потерь не было». Найдено вторым циклом панели.
+lost:
+	@$(COMPOSE) logs --no-log-prefix --tail=20000 app | grep event-lost || echo "потерянных событий не видно (в пределах 20000 строк лога)"
+
 ## Какие порталы установлены и когда продлевались их токены
 portals:
 	@$(COMPOSE) exec -T db psql -U app -d app -c \
@@ -336,12 +344,26 @@ try {
 const domain = process.env.PORTAL
 const force = process.env.FORCE === '1'
 const ids = (process.env.TASKS || '').split(',').map((s) => s.trim()).filter(Boolean)
-const u = new URL(process.env.REDIS_URL)
+// ⚠ Читаем не только хост и порт: пароль, пользователя и номер базы из REDIS_URL
+// прежние версии молча отбрасывали — в день, когда Redis закроют паролем, цель умерла
+// бы с NOAUTH ровно тогда, когда она нужна. Найдено вторым циклом панели.
+let u
+try {
+  u = new URL(process.env.REDIS_URL)
+} catch {
+  console.error('REDIS_URL не разбирается как URL — смотрите .env (значение не печатаем: в нём пароль)')
+  process.exit(1)
+}
+const connection = {
+  host: u.hostname,
+  port: Number(u.port || 6379),
+  username: decodeURIComponent(u.username) || undefined,
+  password: decodeURIComponent(u.password) || undefined,
+  db: Number(u.pathname.slice(1) || 0),
+  maxRetriesPerRequest: null,
+}
 
-const queue = new Queue('task-events', {
-  connection: { host: u.hostname, port: Number(u.port || 6379), maxRetriesPerRequest: null },
-  prefix: 'bull',
-})
+const queue = new Queue('task-events', { connection, prefix: 'bull' })
 
 let queued = 0
 let skipped = 0
@@ -418,8 +440,10 @@ try {
   process.exit(1)
 }
 
-// ⚠ Разбор строки подключения — под своим сообщением. Node на кривом URL печатает
+// ⚠ Разбор строки подключения — под своим сообщением: Node на кривом URL печатает
 // свойство input, то есть в терминал уехала бы вся строка вместе с паролем Redis.
+// ⚠ И читаем ВСЕ части, включая пароль и номер базы: иначе цель умрёт с NOAUTH в тот
+// день, когда Redis закроют паролем. Оба хвоста найдены панелью.
 let u
 try {
   u = new URL(process.env.REDIS_URL)
@@ -427,7 +451,14 @@ try {
   console.error('REDIS_URL не разбирается как URL — смотрите .env (значение не печатаем: в нём пароль)')
   process.exit(1)
 }
-const connection = { host: u.hostname, port: Number(u.port || 6379), maxRetriesPerRequest: null }
+const connection = {
+  host: u.hostname,
+  port: Number(u.port || 6379),
+  username: decodeURIComponent(u.username) || undefined,
+  password: decodeURIComponent(u.password) || undefined,
+  db: Number(u.pathname.slice(1) || 0),
+  maxRetriesPerRequest: null,
+}
 const queue = new Queue('task-events', { connection, prefix: 'bull' })
 const notify = new Queue('notifications', { connection, prefix: 'bull' })
 
@@ -457,9 +488,11 @@ if (failed.length === 0) {
     // чем печатать: терминал оператора и так на виду, а failed-задания живут в Redis.
     const line = String(job.failedReason || '').split('\n')[0]
       .replace(/https:\/\/[^\s]*\/rest\/[^\s]*/g, 'https://…/rest/…/')
-    // `attemptsMade` — число УЖЕ провалившихся попыток, поэтому печатаем «из 5»:
-    // иначе строка читается как «осталось».
-    console.log('  ' + job.id + '  попыток ' + job.attemptsMade + ' из 5  ' + line)
+    // ⚠ `attemptsMade` — число УЖЕ провалившихся попыток, поэтому печатаем «из N»:
+    // иначе строка читается как «осталось». Предел берём из самого задания, а не
+    // числом в тексте: в коде он живёт в TASK_JOB_OPTIONS и когда-нибудь изменится.
+    const limit = (job.opts && job.opts.attempts) || '?'
+    console.log('  ' + job.id + '  попыток ' + job.attemptsMade + ' из ' + limit + '  ' + line)
   }
   console.log('дослать вручную: PORTAL=… TASKS=… FORCE=1 make backfill')
 }
