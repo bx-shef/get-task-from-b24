@@ -155,6 +155,28 @@ function isRetryableSdkError(code: string, status: number): boolean {
 }
 
 /**
+ * Вызов метода REST v3.
+ *
+ * ⚠ Отдельно от v2 не ради симметрии: часть методов живёт ТОЛЬКО в v3 — например
+ * `tasks.task.chat.message.send`, её адрес `/rest/api/…`. Вызов такого метода через v2
+ * просто не найдёт его. Какой версией звать — свойство метода, а не наше предпочтение.
+ */
+export async function callSdkV3<T>(client: TypeB24, method: string, params: Record<string, unknown>): Promise<T> {
+  try {
+    const response = await client.actions.v3.call.make({ method, params })
+    if (!response.isSuccess) {
+      const first = response.getErrors().next()
+      throw toB24Error(first.done ? new Error(response.getErrorMessages().join('; ')) : first.value)
+    }
+    const payload = response.getData() as { result?: unknown } | undefined
+    if (payload?.result === undefined) throw new B24Error('портал ответил без result', 'NO_RESULT', true)
+    return payload.result as T
+  } catch (error) {
+    throw toB24Error(error)
+  }
+}
+
+/**
  * Вызов метода портала. Возвращает `result`, как это делал наш прежний слой.
  *
  * ⚠ Через `actions.v2.call`, а не `callMethod`: последний в версии 2.2.0 объявлен
