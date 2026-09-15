@@ -19,8 +19,13 @@ import {
 import { transferTask, type TransferSettings } from '../pipeline/transfer.js'
 import { withPortalAuth } from '../b24/portalClient.js'
 import { B24Error } from '../b24/errors.js'
-import { createTargetTask, fetchSourceTask, fetchUserName } from '../b24/tasks.js'
-import { claim, markDone, markFailed } from '../store/transfers.js'
+import {
+  createTargetTask,
+  deleteTargetTask,
+  fetchSourceTask,
+  fetchUserName,
+  findTransferredTasks,
+} from '../b24/tasks.js'
 import { findPortal, type PortalConfig } from '../domain/portals.js'
 import { sendTelegramMessage } from '../notify/telegram.js'
 import type { AppContext } from '../runtime.js'
@@ -102,9 +107,14 @@ export function startWorkers(ctx: AppContext): { tasks: Worker; notifications: W
             return { ...task, createdByName: await fetchUserName(auth, task.createdBy) }
           }),
         createTask: (fields) => createTargetTask(config.targetWebhookUrl, fields),
-        claim: (domain, taskId) => claim(pool, domain, taskId),
-        markDone: (domain, taskId, targetTaskId) => markDone(pool, domain, taskId, targetTaskId),
-        markFailed: (domain, taskId, reason) => markFailed(pool, domain, taskId, reason),
+        findTransferred: (domain, taskId) =>
+          findTransferredTasks(config.targetWebhookUrl, {
+            sourceDomain: domain,
+            sourceTaskId: taskId,
+            sourceTaskField: config.targetSourceTaskField,
+            sourceDomainField: config.targetSourceDomainField,
+          }),
+        deleteTask: (targetTaskId) => deleteTargetTask(config.targetWebhookUrl, targetTaskId),
         notify: async (text) => {
           await queues.notifications.add('notify', { text }, NOTIFY_JOB_OPTIONS)
         },

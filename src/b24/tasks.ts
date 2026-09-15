@@ -6,6 +6,7 @@ import { callPortal, callWebhook } from './rest.js'
 import { B24Error } from './errors.js'
 import type { SourceTaskFull, TargetTaskFields } from '../domain/taskMapping.js'
 import { portalRestUrl } from '../domain/portals.js'
+import { taskListRows, ufValue } from './taskRows.js'
 import type { PortalAuth } from '../store/portalTokens.js'
 
 type Auth = Pick<PortalAuth, 'accessToken' | 'clientEndpoint'>
@@ -188,4 +189,76 @@ export async function bindAppEvents(auth: Auth, handlerUrl: string): Promise<voi
   for (const event of BOUND_EVENTS) {
     await bindEvent(auth, event, handlerUrl)
   }
+}
+
+/** Ключ, по которому задача у нас находится обратно: портал клиента + задача в нём. */
+export interface TransferKey {
+  sourceDomain: string
+  sourceTaskId: number
+  /** Код поля у нас, где лежит ID задачи клиента. */
+  sourceTaskField: string
+  /** Код поля у нас, где лежит домен портала клиента. */
+  sourceDomainField: string
+}
+
+/**
+ * Какие из вернувшихся задач ДЕЙСТВИТЕЛЬНО относятся к этой паре — чистая функция.
+ *
+ * ⚠ Ответ портала перепроверяется здесь целиком, и это не перестраховка. Замерено
+ * (docs/PRODUCT.md, раздел 1): непонятый фильтр Битрикс24 не отвергает — он возвращает
+ * ВСЁ. На дедупликации это худшая из возможных ошибок: «нашлось пятьдесят» было бы
+ * принято за «уже перенесена», и задача клиента не создалась бы никогда и молча.
+ *
+ * ⚠ ID сравниваем числом, домен — без регистра: портал отдаёт значения строками даже
+ * для числового поля, а домен мы храним нормализованным.
+ */
+export function matchTransferred(result: unknown, key: TransferKey): number[] {
+  const found: number[] = []
+
+  for (const row of taskListRows(result)) {
+    const id = toNumber(pick(row, 'id', 'ID'))
+    if (id === undefined || id <= 0) continue
+
+    const rawTaskId = ufValue(row, key.sourceTaskField).trim()
+    if (rawTaskId === '' || Number(rawTaskId) !== key.sourceTaskId) continue
+
+    const rawDomain = ufValue(row, key.sourceDomainField).trim().toLowerCase()
+    if (rawDomain !== key.sourceDomain.trim().toLowerCase()) continue
+
+    found.push(id)
+  }
+
+  // По возрастанию ID: старшая задача — та, что создана раньше, и именно она остаётся
+  // жить, если задач оказалось две (docs/PROCESSING.md → «Дедупликация»).
+  return found.sort((a, b) => a - b)
+}
+
+/**
+ * Перенесённые задачи у нас по паре «портал клиента + задача в нём».
+ *
+ * ⚠ Это замена журнала переносов: связка живёт в самих задачах, а не во втором месте
+ * рядом с ними (docs/PRODUCT.md, раздел 1а).
+ */
+export async function findTransferredTasks(webhookUrl: string, key: TransferKey): Promise<number[]> {
+  const result = await callWebhook<unknown>(webhookUrl, 'tasks.task.list', {
+    // ⚠ Фильтр ОБЪЕКТОМ — замерено на боевом портале; массив и форма v3 отвергаются
+    // с 400 (docs/PRODUCT.md, раздел 1).
+    filter: {
+      [key.sourceTaskField]: key.sourceTaskId,
+      [key.sourceDomainField]: key.sourceDomain,
+    },
+    select: ['ID', key.sourceTaskField, key.sourceDomainField],
+    order: { ID: 'asc' },
+  })
+  return matchTransferred(result, key)
+}
+
+/**
+ * Удаление задачи у нас. Нужно ровно одному случаю: сверка после создания нашла вторую
+ * задачу по той же паре (docs/PROCESSING.md → «Дедупликация»).
+ *
+ * ⚠ И `taskId`, и `id`: страница метода называет обязательными оба имени.
+ */
+export async function deleteTargetTask(webhookUrl: string, taskId: number): Promise<void> {
+  await callWebhook(webhookUrl, 'tasks.task.delete', { taskId, id: taskId })
 }

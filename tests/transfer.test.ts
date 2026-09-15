@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { transferTask, type TransferDeps, type TransferSettings } from '../src/pipeline/transfer.js'
 import type { SourceTaskFull } from '../src/domain/taskMapping.js'
-import type { ClaimResult } from '../src/store/transfers.js'
 
 const settings: TransferSettings = {
   portal: { domain: 'client.bitrix24.ru', responsibleId: 17, clientId: 'a', clientSecret: 'b', groupId: 0 },
@@ -9,6 +8,8 @@ const settings: TransferSettings = {
   targetResponsibleId: 1,
   titlePrefix: '#support',
   defaultDeadlineHours: 24,
+  sourceTaskField: 'UF_SOURCE_TASK_ID',
+  sourceDomainField: 'UF_SOURCE_DOMAIN',
 }
 
 const task: SourceTaskFull = {
@@ -21,13 +22,20 @@ const task: SourceTaskFull = {
   deadline: undefined,
 }
 
+/**
+ * По умолчанию портал отвечает так, как отвечает в норме: до создания задачи нет,
+ * после — ровно одна, созданная нами.
+ */
 function makeDeps(overrides: Partial<TransferDeps> = {}): TransferDeps {
+  let created = false
   return {
     loadTask: vi.fn(async () => task),
-    createTask: vi.fn(async () => 42),
-    claim: vi.fn(async () => ({ claimed: true }) as ClaimResult),
-    markDone: vi.fn(async () => {}),
-    markFailed: vi.fn(async () => {}),
+    createTask: vi.fn(async () => {
+      created = true
+      return 42
+    }),
+    findTransferred: vi.fn(async () => (created ? [42] : [])),
+    deleteTask: vi.fn(async () => {}),
     notify: vi.fn(async () => {}),
     now: () => new Date('2026-08-26T10:00:00.000Z'),
     log: vi.fn(),
@@ -46,14 +54,14 @@ describe('transferTask', () => {
       RESPONSIBLE_ID: 1,
       DEADLINE: '2026-08-27T10:00:00+00:00',
     }))
-    expect(deps.markDone).toHaveBeenCalledWith('client.bitrix24.ru', 555, 42)
+    expect(deps.deleteTask).not.toHaveBeenCalled()
     expect(vi.mocked(deps.notify).mock.calls[0]?.[0]).toContain('Задача создана')
   })
 
-  it('не тот префикс — не создаём и не занимаем журнал', async () => {
+  it('не тот префикс — портал даже не спрашиваем', async () => {
     const deps = makeDeps({ loadTask: vi.fn(async () => ({ ...task, title: 'обычная задача' })) })
     expect(await transferTask(555, deps, settings)).toEqual({ status: 'skipped', reason: 'title-prefix' })
-    expect(deps.claim).not.toHaveBeenCalled()
+    expect(deps.findTransferred).not.toHaveBeenCalled()
     expect(deps.createTask).not.toHaveBeenCalled()
     expect(deps.notify).not.toHaveBeenCalled()
   })
@@ -64,35 +72,33 @@ describe('transferTask', () => {
     expect(deps.createTask).not.toHaveBeenCalled()
   })
 
-  // ⚠ Ровно та авария, ради которой заведён журнал: повторная доставка события.
+  // ⚠ Ровно та авария, ради которой существовала дедупликация: повторная доставка
+  // события или ручной досыл уже перенесённой задачи.
   it('задача уже перенесена — второй не создаём', async () => {
-    const deps = makeDeps({ claim: vi.fn(async () => ({ claimed: false, transferred: true }) as ClaimResult) })
-    expect(await transferTask(555, deps, settings)).toEqual({ status: 'duplicate' })
+    const deps = makeDeps({ findTransferred: vi.fn(async () => [7]) })
+    expect(await transferTask(555, deps, settings)).toEqual({ status: 'duplicate', targetTaskId: 7 })
     expect(deps.createTask).not.toHaveBeenCalled()
     expect(deps.notify).not.toHaveBeenCalled()
   })
 
-  // ⚠ Найдено вторым циклом ревью: воркер, убитый посреди переноса, оставляет свежую
-  // занятую строку. BullMQ возвращает зависшее задание — и раньше мы принимали это за
-  // дубль и завершались УСПЕШНО: задача клиента не создана, ретраев больше нет.
-  it('занята другим воркером — это не дубль, а повод повторить', async () => {
-    const deps = makeDeps({ claim: vi.fn(async () => ({ claimed: false, transferred: false }) as ClaimResult) })
-    await expect(transferTask(555, deps, settings)).rejects.toThrow(/занята другим/)
+  // ⚠ Главный риск замены журнала на вопрос к порталу: «не знаю» нельзя принимать за
+  // «не переносили», иначе каждый сбой поиска заводит вторую задачу.
+  it('портал не ответил на поиск — задачу НЕ создаём, ошибку пробрасываем', async () => {
+    const deps = makeDeps({ findTransferred: vi.fn(async () => { throw new Error('портал занят') }) })
+    await expect(transferTask(555, deps, settings)).rejects.toThrow('портал занят')
     expect(deps.createTask).not.toHaveBeenCalled()
   })
 
-  // ⚠ Дефект, внесённый правкой claim из первого цикла и пойманный вторым: сбой ПОСЛЕ
-  // создания задачи помечал строку провалом, следующая попытка её перезанимала и
-  // создавала ВТОРУЮ задачу у нас.
-  it('задача создана, но журнал не записался — второй задачи не будет', async () => {
-    const markDone = vi.fn()
-      .mockRejectedValueOnce(new Error('база недоступна'))
-      .mockResolvedValueOnce(undefined)
-    const deps = makeDeps({ markDone })
-
-    expect(await transferTask(555, deps, settings)).toEqual({ status: 'created', targetTaskId: 42 })
-    expect(deps.markFailed).not.toHaveBeenCalled()
-    expect(markDone).toHaveBeenCalledTimes(2)
+  // ⚠ Порядок обязателен: спросить ДО создания.
+  it('спрашивает портал раньше, чем создаёт задачу', async () => {
+    const order: string[] = []
+    const deps = makeDeps({
+      findTransferred: vi.fn(async () => { order.push('find'); return [] }),
+      createTask: vi.fn(async () => { order.push('create'); return 42 }),
+    })
+    await transferTask(555, deps, settings)
+    expect(order[0]).toBe('find')
+    expect(order[1]).toBe('create')
   })
 
   // ⚠ Повтор задания сходил бы в портал заново и завершился «дублем» — работа впустую,
@@ -100,24 +106,11 @@ describe('transferTask', () => {
   it('упавшее уведомление не роняет перенос', async () => {
     const deps = makeDeps({ notify: vi.fn(async () => { throw new Error('Redis лёг') }) })
     expect(await transferTask(555, deps, settings)).toEqual({ status: 'created', targetTaskId: 42 })
-    expect(deps.markFailed).not.toHaveBeenCalled()
   })
 
-  // ⚠ Порядок обязателен: занять ДО создания, иначе гонка двух воркеров даёт дубль.
-  it('занимает журнал раньше, чем создаёт задачу', async () => {
-    const order: string[] = []
-    const deps = makeDeps({
-      claim: vi.fn(async () => { order.push('claim'); return { claimed: true } as ClaimResult }),
-      createTask: vi.fn(async () => { order.push('create'); return 42 }),
-    })
-    await transferTask(555, deps, settings)
-    expect(order).toEqual(['claim', 'create'])
-  })
-
-  it('падение создания помечает провал и пробрасывает ошибку очереди', async () => {
+  it('падение создания пробрасывает ошибку очереди', async () => {
     const deps = makeDeps({ createTask: vi.fn(async () => { throw new Error('портал занят') }) })
     await expect(transferTask(555, deps, settings)).rejects.toThrow('портал занят')
-    expect(deps.markFailed).toHaveBeenCalledWith('client.bitrix24.ru', 555, 'портал занят')
   })
 
   // ⚠ Сигнал на каждый ретрай приучает не смотреть на сигналы.
@@ -132,13 +125,71 @@ describe('transferTask', () => {
     await expect(transferTask(555, last, settings, { isFinalFailure: () => true })).rejects.toThrow()
     expect(vi.mocked(last.notify).mock.calls[0]?.[0]).toContain('не удался')
   })
+})
 
-  it('упавшая отметка провала не подменяет исходную ошибку', async () => {
+/**
+ * Сверка после создания — то, чем заменена блокировка журнала. Раздел проверяет
+ * именно её: журнала больше нет, и это единственная защита от гонки.
+ */
+describe('сверка после создания', () => {
+  it('нашлась вторая задача старше нашей — свою удаляем и сообщаем', async () => {
+    const deps = makeDeps({ findTransferred: vi.fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([11, 42]) })
+
+    expect(await transferTask(555, deps, settings)).toEqual({ status: 'duplicate', targetTaskId: 11 })
+    expect(deps.deleteTask).toHaveBeenCalledWith(42)
+    const text = vi.mocked(deps.notify).mock.calls[0]?.[0] ?? ''
+    expect(text).toContain('дважды')
+    expect(text).toContain('лишняя удалена')
+    // ⚠ Сообщение «задача создана» тут не к месту: жить остаётся чужая задача.
+    expect(vi.mocked(deps.notify).mock.calls).toHaveLength(1)
+  })
+
+  // ⚠ Правило «остаётся меньший ID» одинаково у всех воркеров: столкнувшись, они
+  // выберут одну и ту же задачу, и удалять будет ровно тот, кто создал вторую.
+  it('наша задача старше — её не трогаем, но о гонке сообщаем', async () => {
+    const deps = makeDeps({ findTransferred: vi.fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([42, 77]) })
+
+    expect(await transferTask(555, deps, settings)).toEqual({ status: 'created', targetTaskId: 42 })
+    expect(deps.deleteTask).not.toHaveBeenCalled()
+    expect(vi.mocked(deps.notify).mock.calls[0]?.[0]).toContain('дважды')
+  })
+
+  it('удалить дубль не вышло — сообщение зовёт человека, перенос не падает', async () => {
     const deps = makeDeps({
-      createTask: vi.fn(async (): Promise<number> => { throw new Error('портал занят') }),
-      markFailed: vi.fn(async () => { throw new Error('база недоступна') }),
+      findTransferred: vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([11, 42]),
+      deleteTask: vi.fn(async () => { throw new Error('нет прав') }),
     })
-    await expect(transferTask(555, deps, settings)).rejects.toThrow('портал занят')
+
+    expect(await transferTask(555, deps, settings)).toEqual({ status: 'duplicate', targetTaskId: 11 })
+    expect(vi.mocked(deps.notify).mock.calls[0]?.[0]).toContain('НЕ удалось')
+  })
+
+  // ⚠ Сама сверка НЕ имеет права уронить перенос: задача уже создана, а повтор завёл
+  // бы вторую.
+  it('портал не ответил на сверку — перенос успешен, в логе след', async () => {
+    const deps = makeDeps({
+      findTransferred: vi.fn().mockResolvedValueOnce([]).mockRejectedValueOnce(new Error('таймаут')),
+    })
+
+    expect(await transferTask(555, deps, settings)).toEqual({ status: 'created', targetTaskId: 42 })
+    expect(vi.mocked(deps.log).mock.calls.map((c) => c[0])).toContain('dedup-check-failed')
+    expect(vi.mocked(deps.notify).mock.calls[0]?.[0]).toContain('Задача создана')
+  })
+
+  // ⚠ Отказ самой дедупликации, а не переноса: обычно код UF-поля в окружении не тот,
+  // что на портале, и `tasks.task.add` молча проглотил неизвестное поле. Каждое
+  // следующее событие заводило бы новую задачу — и никто бы не узнал.
+  it('созданная задача не находится по своим же полям — зовём человека', async () => {
+    const deps = makeDeps({ findTransferred: vi.fn(async () => []) })
+
+    expect(await transferTask(555, deps, settings)).toEqual({ status: 'created', targetTaskId: 42 })
+    expect(deps.deleteTask).not.toHaveBeenCalled()
+    expect(vi.mocked(deps.log).mock.calls.map((c) => c[0])).toContain('dedup-unverified')
+    expect(vi.mocked(deps.notify).mock.calls[0]?.[0]).toContain('Дедупликация не работает')
   })
 })
 

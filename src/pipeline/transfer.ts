@@ -1,23 +1,37 @@
 /**
- * Перенос одной задачи: вычитать у клиента → проверить критерии → занять в журнале →
- * создать у нас → уведомить. Спецификация — docs/PROCESSING.md.
+ * Перенос одной задачи: вычитать у клиента → проверить критерии → спросить наш портал,
+ * не переносили ли её уже → создать → сверить → уведомить. Спецификация —
+ * docs/PROCESSING.md.
+ *
+ * ⚠ Журнала переносов больше нет: связка «задача клиента → наша задача» живёт в самих
+ * UF-полях задачи (docs/PRODUCT.md, раздел 1а). Отсюда два следствия, которые надо
+ * держать в голове, читая этот файл: (1) превентивной блокировки не существует, гонка
+ * закрывается сверкой ПОСЛЕ создания; (2) спросить «переносили ли» можно только у
+ * портала, то есть ответ стоит сетевого вызова и может не прийти.
  *
  * Побочные эффекты приходят снаружи (TransferDeps), поэтому весь порядок действий
  * проверяется тестами без сети, базы и портала.
  */
 import { decide, type SkipReason } from '../domain/criteria.js'
 import { buildTargetTask, type SourceTaskFull, type TargetTaskFields } from '../domain/taskMapping.js'
-import { buildCreatedMessage, buildFailureMessage } from '../domain/telegramMessage.js'
+import {
+  buildCreatedMessage,
+  buildDuplicateMessage,
+  buildFailureMessage,
+  buildUnverifiedMessage,
+} from '../domain/telegramMessage.js'
 import type { PortalConfig } from '../domain/portals.js'
-import type { ClaimResult } from '../store/transfers.js'
 
 export interface TransferDeps {
   loadTask(domain: string, taskId: number): Promise<SourceTaskFull>
   createTask(fields: TargetTaskFields): Promise<number>
-  /** Занять задачу в журнале. */
-  claim(domain: string, taskId: number): Promise<ClaimResult>
-  markDone(domain: string, taskId: number, targetTaskId: number): Promise<void>
-  markFailed(domain: string, taskId: number, reason: string): Promise<void>
+  /**
+   * ID наших задач, уже перенесённых по этой паре «портал + задача», по возрастанию.
+   * Это и есть замена журнала.
+   */
+  findTransferred(domain: string, taskId: number): Promise<number[]>
+  /** Удалить нашу задачу. Вызывается только сверкой после создания. */
+  deleteTask(targetTaskId: number): Promise<void>
   /** Постановка сообщения в очередь уведомлений — не отправка. */
   notify(text: string): Promise<void>
   now(): Date
@@ -31,15 +45,15 @@ export interface TransferSettings {
   titlePrefix: string
   defaultDeadlineHours: number
   /** Код поля у нас, куда писать ID задачи клиента. */
-  sourceTaskField?: string | null
+  sourceTaskField: string
   /** Код поля у нас, куда писать домен портала клиента. */
-  sourceDomainField?: string | null
+  sourceDomainField: string
 }
 
 export type TransferOutcome =
   | { status: 'created'; targetTaskId: number }
   | { status: 'skipped'; reason: SkipReason }
-  | { status: 'duplicate' }
+  | { status: 'duplicate'; targetTaskId: number }
 
 export interface TransferContext {
   /**
@@ -66,26 +80,26 @@ export async function transferTask(
 
     const verdict = decide(source, settings.portal, settings.titlePrefix)
     if (!verdict.transfer) {
-      // ⚠ Отказ — норма: на портале клиента задачи создаются постоянно. В журнал
-      // переносов он не пишется, иначе журнал перестаёт быть журналом переносов.
+      // ⚠ Отказ — норма: на портале клиента задачи создаются постоянно, и 99% из них
+      // нас не касаются. Никуда, кроме лога, он не пишется.
       deps.log('skip', { domain, taskId, reason: verdict.reason })
       return { status: 'skipped', reason: verdict.reason }
     }
 
-    // ⚠ Занимаем ДО создания: два события об одной задаче могут идти одновременно,
-    // и решает это первичный ключ базы, а не проверка «уже есть?» перед вставкой.
-    const claim = await deps.claim(domain, taskId)
-    if (!claim.claimed) {
-      // ⚠ «Уже перенесена» и «занята другим прямо сейчас» — РАЗНЫЕ исходы, и путать их
-      // нельзя. Второй случай возникает, когда воркер убит посреди переноса (выкат,
-      // OOM): BullMQ возвращает зависшее задание, а мы, приняв это за дубль,
-      // завершались успешно — задача клиента не создана, строка навсегда в `pending`.
-      // Найдено вторым циклом ревью.
-      if (claim.transferred) {
-        deps.log('duplicate', { domain, taskId })
-        return { status: 'duplicate' }
-      }
-      throw new Error('задача занята другим воркером — повторим позже')
+    // ⚠ Спрашиваем ДО создания — это ловит нормальный случай: повторная доставка
+    // события или ручной досыл уже перенесённой задачи. Гонку двух воркеров эта
+    // проверка НЕ закрывает и не притворяется, что закрывает: между ответом портала и
+    // созданием задачи есть окно. Его закрывает сверка ниже.
+    //
+    // ⚠ Ошибку этого вызова НЕ проглатываем: не ответивший портал означает «не знаю,
+    // переносили ли», а не «не переносили». Проглотив, мы бы на каждом сбое поиска
+    // заводили второй экземпляр задачи — то есть починили бы редкий дубль ценой
+    // регулярного.
+    const before = await deps.findTransferred(domain, taskId)
+    const alreadyTransferred = before[0]
+    if (alreadyTransferred !== undefined) {
+      deps.log('duplicate', { domain, taskId, targetTaskId: alreadyTransferred })
+      return { status: 'duplicate', targetTaskId: alreadyTransferred }
     }
 
     const fields = buildTargetTask(source, {
@@ -101,8 +115,10 @@ export async function transferTask(
     })
 
     created = await deps.createTask(fields)
-    await deps.markDone(domain, taskId, created)
     deps.log('created', { domain, taskId, targetTaskId: created, groupId: fields.GROUP_ID ?? 0 })
+
+    const verdictAfter = await verifyUnique(created, taskId, deps, settings)
+    if (verdictAfter.duplicate) return { status: 'duplicate', targetTaskId: verdictAfter.keptTaskId }
 
     // ⚠ Уведомление ставится в очередь отдельным шагом и НЕ роняет перенос: задача уже
     // создана, а повтор задания сходил бы в портал заново и завершился «дублем» —
@@ -127,15 +143,13 @@ export async function transferTask(
     const final = context.isFinalFailure(error)
 
     if (created !== undefined) {
-      // ⚠ Задача у нас УЖЕ создана: журнал обязан это запомнить, иначе следующая
-      // попытка перезаймёт строку и заведёт вторую. Этот дефект внесла правка `claim`
-      // из первого цикла и поймал второй: замерено — создавались задачи 1000 и 1001.
-      await deps.markDone(domain, taskId, created).catch(() => {})
+      // ⚠ Задача у нас УЖЕ создана — ретраить нечего: повтор завёл бы вторую. Раньше
+      // здесь дописывался журнал, теперь дописывать нечего (связку несёт сама задача),
+      // но исход остаётся тем же — успех со следом в логе.
       deps.log('failed-after-create', { domain, taskId, targetTaskId: created, reason })
       return { status: 'created', targetTaskId: created }
     }
 
-    await deps.markFailed(domain, taskId, reason).catch(() => {})
     deps.log('failed', { domain, taskId, reason, final })
 
     // ⚠ Будим человека только когда повтора не будет: сигнал на каждый ретрай
@@ -146,4 +160,80 @@ export async function transferTask(
 
     throw error
   }
+}
+
+type UniqueVerdict = { duplicate: false } | { duplicate: true; keptTaskId: number }
+
+/**
+ * Сверка после создания — то, чем заменена блокировка журнала.
+ *
+ * ⚠ Живёт «на что бы там ни было»: она НЕ имеет права уронить перенос. Задача уже
+ * создана, ретрай сходил бы в портал по второму кругу и в лучшем случае ничего не
+ * изменил, а в худшем — завёл бы третью задачу. Поэтому любой сбой самой сверки
+ * остаётся строкой в логе.
+ *
+ * ⚠ Из двух задач остаётся та, у которой ID меньше: она создана раньше. Правило
+ * одинаково у всех воркеров — значит, столкнувшись, они выберут одну и ту же задачу,
+ * а удалять её будет только тот, кто создал другую.
+ */
+async function verifyUnique(
+  created: number,
+  sourceTaskId: number,
+  deps: TransferDeps,
+  settings: TransferSettings,
+): Promise<UniqueVerdict> {
+  const domain = settings.portal.domain
+
+  let found: number[]
+  try {
+    found = await deps.findTransferred(domain, sourceTaskId)
+  } catch (error) {
+    deps.log('dedup-check-failed', { domain, taskId: sourceTaskId, targetTaskId: created, reason: (error as Error).message })
+    return { duplicate: false }
+  }
+
+  // ⚠ Созданной задачи нет в ответе — сломана сама дедупликация, а не этот перенос:
+  // значит, по паре UF-полей задача не находится, и КАЖДОЕ следующее событие по ней
+  // заведёт новую. Обычная причина — код поля в окружении не совпал с порталом, а
+  // `tasks.task.add` неизвестное поле молча проглотил.
+  if (!found.includes(created)) {
+    deps.log('dedup-unverified', { domain, taskId: sourceTaskId, targetTaskId: created, found: found.length })
+    await deps
+      .notify(buildUnverifiedMessage({ domain, sourceTaskId, targetDomain: settings.targetDomain, targetTaskId: created }))
+      .catch(() => {})
+    return { duplicate: false }
+  }
+
+  const kept = found[0]
+  if (found.length < 2 || kept === undefined) return { duplicate: false }
+
+  // Наша задача и есть самая ранняя: лишнюю создал кто-то другой, и удалит её он же —
+  // по этому же правилу. Сообщить всё равно надо.
+  const extra = kept === created ? (found[found.length - 1] ?? created) : created
+
+  let removed = false
+  if (extra === created) {
+    try {
+      await deps.deleteTask(created)
+      removed = true
+    } catch (error) {
+      deps.log('dedup-delete-failed', { domain, taskId: sourceTaskId, targetTaskId: created, reason: (error as Error).message })
+    }
+  }
+
+  deps.log('dedup-duplicate', { domain, taskId: sourceTaskId, keptTaskId: kept, extraTaskId: extra, removed })
+  await deps
+    .notify(
+      buildDuplicateMessage({
+        domain,
+        sourceTaskId,
+        targetDomain: settings.targetDomain,
+        keptTaskId: kept,
+        extraTaskId: extra,
+        removed,
+      }),
+    )
+    .catch(() => {})
+
+  return kept === created ? { duplicate: false } : { duplicate: true, keptTaskId: kept }
 }

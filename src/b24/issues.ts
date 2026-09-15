@@ -4,6 +4,7 @@
  */
 import { callWebhook, callWebhookV3 } from './rest.js'
 import { B24Error } from './errors.js'
+import { str, taskListRows, ufValue, type TaskRow } from './taskRows.js'
 
 /** Задача, отобранная на выгрузку. Поля — те, что нужны issue и отметке. */
 export interface ExportableTask {
@@ -12,20 +13,6 @@ export interface ExportableTask {
   description: string
   sourceDomain: string
   issueRef: string
-}
-
-interface RawTask {
-  id?: unknown
-  ID?: unknown
-  title?: unknown
-  TITLE?: unknown
-  description?: unknown
-  DESCRIPTION?: unknown
-  [field: string]: unknown
-}
-
-function str(value: unknown): string {
-  return typeof value === 'string' ? value : typeof value === 'number' ? String(value) : ''
 }
 
 /**
@@ -73,13 +60,9 @@ export async function listTasksToExport(
   if (options.groupId > 0) filter.GROUP_ID = options.groupId
 
   const select = ['ID', 'TITLE', 'DESCRIPTION', options.sourceTaskField, options.sourceDomainField, options.issueField]
-  const result = await callWebhook<{ tasks?: RawTask[]; items?: RawTask[] } | RawTask[]>(
-    webhookUrl,
-    'tasks.task.list',
-    { filter, select, order: { ID: 'asc' } },
-  )
+  const result = await callWebhook<unknown>(webhookUrl, 'tasks.task.list', { filter, select, order: { ID: 'asc' } })
 
-  const rows = Array.isArray(result) ? result : (result?.tasks ?? result?.items ?? [])
+  const rows: TaskRow[] = taskListRows(result)
   const ready: ExportableTask[] = []
 
   for (const row of rows) {
@@ -88,10 +71,10 @@ export async function listTasksToExport(
 
     // ⚠ Портал отдаёт UF-поля как есть, но регистр ключа зависит от версии ответа —
     // смотрим оба написания, иначе «пусто» окажется ложным и задача выгрузится дважды.
-    const issueRef = str(row[options.issueField] ?? row[camel(options.issueField)])
+    const issueRef = ufValue(row, options.issueField)
     if (issueRef.trim()) continue
 
-    const sourceDomain = str(row[options.sourceDomainField] ?? row[camel(options.sourceDomainField)])
+    const sourceDomain = ufValue(row, options.sourceDomainField)
     ready.push({
       id,
       title: str(row.title ?? row.TITLE),
@@ -104,11 +87,6 @@ export async function listTasksToExport(
   }
 
   return ready
-}
-
-/** `UF_SOURCE_TASK_ID` → `ufSourceTaskId`: во втором написании портал отдаёт часть ответов. */
-function camel(code: string): string {
-  return code.toLowerCase().replace(/_([a-z0-9])/g, (_m, c: string) => c.toUpperCase())
 }
 
 /** Отметка «выгружено»: `owner/repo#17` в поле задачи. */

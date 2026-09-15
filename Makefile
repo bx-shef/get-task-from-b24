@@ -1,4 +1,4 @@
-.PHONY: help self-update compose-update ps logs logs-tail doctor transfers portals clients \
+.PHONY: help self-update compose-update ps logs logs-tail doctor queue portals clients \
         client-add client-disable client-enable client-forget backfill \
         prod-up prod-down prod-pull prod-redeploy backup issues
 
@@ -270,11 +270,14 @@ doctor:
 	@echo "— контейнеры —"; $(COMPOSE) ps
 	@echo "— health —"; $(COMPOSE) exec -T app wget -qO- http://localhost:3000/health || echo "приложение не отвечает"
 
-## Последние 20 записей журнала переносов
-transfers:
-	@$(COMPOSE) exec -T db psql -U app -d app -c \
-		"select domain, source_task_id, target_task_id, status, left(coalesce(reason,''),60) as reason, updated_at \
-		 from transfers order by updated_at desc limit 20;"
+## Что в очереди переносов: сколько ждёт, сколько в работе, что упало
+#
+# ⚠ Это замена прежней цели `make transfers`. Журнала переносов больше нет: связка
+# «задача клиента → наша задача» живёт в UF-полях самой задачи (docs/PRODUCT.md,
+# раздел 1а), а «что доехало» смотрится на портале. Здесь остаётся вопрос, на который
+# портал не отвечает: что ещё НЕ доехало и почему.
+queue:
+	@printf '%s' "$$QUEUE_JS" | $(COMPOSE) exec -T app node
 
 ## Какие порталы установлены и когда продлевались их токены
 portals:
@@ -354,9 +357,9 @@ for (const id of ids) {
 
   const key = domain + '--' + id
   // ⚠ getJob НЕ видит задание, которое уже выполнено и вычищено по removeOnComplete.
-  // Это не дыра: от повторного переноса защищает журнал переносов (claim не занимает
-  // строку, у которой уже есть target_task_id). Здесь — только вежливость к оператору,
-  // чтобы не ставить заново то, что прямо сейчас в работе.
+  // Это не дыра: от повторного переноса защищает сам обработчик — он спрашивает наш
+  // портал по UF-полям задачи, переносилась ли она уже. Здесь — только вежливость к
+  // оператору, чтобы не ставить заново то, что прямо сейчас в работе.
   const known = await queue.getJob(key)
   if (known) {
     const state = await known.getState()
@@ -395,9 +398,47 @@ for (const id of ids) {
 }
 
 await queue.close()
-console.log('итого: поставлено ' + queued + ', пропущено ' + skipped + '. Смотреть: make transfers')
+console.log('итого: поставлено ' + queued + ', пропущено ' + skipped + '. Смотреть: make queue')
 endef
 export BACKFILL_JS
+
+# ⚠ Те же правила, что у BACKFILL_JS: внутри блока НЕ используйте `$` — make развернёт
+# его как свою переменную, и в контейнер уедет искажённый скрипт.
+define QUEUE_JS
+const BULLMQ = '/app/.output/server/node_modules/bullmq/dist/cjs/index.js'
+let Queue
+try {
+  ;({ Queue } = await import(BULLMQ))
+} catch {
+  console.error('не найден bullmq по пути ' + BULLMQ + ' — изменилась раскладка образа')
+  process.exit(1)
+}
+
+const u = new URL(process.env.REDIS_URL)
+const connection = { host: u.hostname, port: Number(u.port || 6379), maxRetriesPerRequest: null }
+const queue = new Queue('task-events', { connection, prefix: 'bull' })
+
+const counts = await queue.getJobCounts('waiting', 'active', 'delayed', 'failed', 'completed')
+console.log('очередь переносов: ждёт ' + counts.waiting + ', в работе ' + counts.active
+  + ', отложено ' + counts.delayed + ', упало ' + counts.failed + ', готово ' + counts.completed)
+
+// ⚠ Упавшие показываем с причиной: ради этого цель и существует. Хранилища отказов
+// нет, и очередь — единственное место, где видно «не доехало и вот почему».
+const failed = await queue.getFailed(0, 19)
+if (failed.length === 0) {
+  console.log('упавших заданий нет')
+} else {
+  console.log('последние упавшие (до 20):')
+  for (const job of failed) {
+    const line = String(job.failedReason || '').split('\n')[0]
+    console.log('  ' + job.id + '  попыток ' + job.attemptsMade + '  ' + line)
+  }
+  console.log('дослать вручную: PORTAL=… TASKS=… FORCE=1 make backfill')
+}
+
+await queue.close()
+endef
+export QUEUE_JS
 
 ## Выгрузить задачи клиента в issue его репозитория: PORTAL=… [LIMIT=50] make issues
 #
