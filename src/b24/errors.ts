@@ -34,7 +34,14 @@ export const EXPIRED_TOKEN_CODES = new Set(['expired_token', 'invalid_token', 'N
 
 export function isRetryable(code: string, httpStatus?: number): boolean {
   if (RETRYABLE_CODES.has(code)) return true
-  // 5xx, 429 и 408 — состояние портала или канала, а не нашего запроса.
+  // 5xx и 429 — состояние портала, а не нашего запроса.
+  //
+  // ⚠ 408 добавлен ради `REQUEST_TIMEOUT`: SDK ставит этот статус САМ, когда истёк наш
+  // таймаут и ответа не было вовсе. Что Битрикс24 когда-либо отвечает 408 сам — НЕ
+  // проверено ни документацией, ни замером; правило добавлено по смыслу статуса
+  // («запрос не успел»), и если портал однажды начнёт отдавать 408 на невалидный
+  // запрос, мы будем его повторять впустую. Цена ошибки в эту сторону — лишние пять
+  // попыток, в обратную — потерянная задача клиента.
   if (httpStatus !== undefined && (httpStatus >= 500 || httpStatus === 429 || httpStatus === 408)) return true
   return false
 }
