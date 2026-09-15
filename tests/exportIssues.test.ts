@@ -115,6 +115,20 @@ describe('выгрузка задач в issue', () => {
     await expect(exportIssues(bare, portal, { limit: 10 }, d)).rejects.toThrow(/не настроена/)
   })
 
+  it('задача чужого клиента не уедет в этот репозиторий', async () => {
+    // ⚠ Портал вернул задачу с другим обратным адресом — фильтр подвёл. Наш код обязан
+    // это поймать: issue в приватном репозитории чужого клиента не отзывается.
+    const createIssue = vi.fn()
+    const d = deps({ createIssue }, [
+      { id: 9, title: 'чужая', description: '', sourceDomain: 'другой-клиент.bitrix24.by', issueRef: '' },
+    ])
+
+    const report = await exportIssues(config, portal, { limit: 10 }, d)
+    expect(createIssue).not.toHaveBeenCalled()
+    expect(report.failed).toBe(1)
+    expect(report.lines[0]?.text).toContain('не совпадает с клиентом')
+  })
+
   it('сбой на одной задаче не останавливает остальные', async () => {
     let first = true
     const d = deps(

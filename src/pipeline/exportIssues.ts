@@ -85,6 +85,21 @@ export async function exportIssues(
   const report: ExportReport = { repo, lines: [], exported: 0, failed: 0 }
 
   for (const task of tasks) {
+    // ⚠ Перепроверяем домен СВОИМ кодом, хотя он же стоит в фильтре запроса. Причина та
+    // же, по которой пустоту поля мы решаем сами: фильтр `tasks.task.list` по UF-полю
+    // не задокументирован, а непонятый фильтр портал не отвергает — он возвращает всё
+    // подряд. Здесь цена такой осечки — задача одного клиента в приватном репозитории
+    // другого, и это не отзывается. Тот же приём, что в `criteria.decide`. Найдено панелью.
+    if (task.sourceDomain !== portal.domain) {
+      report.failed++
+      report.lines.push({
+        taskId: task.id,
+        status: 'failed',
+        text: `пропущено: обратный адрес задачи «${task.sourceDomain || 'пусто'}» не совпадает с клиентом ${portal.domain}`,
+      })
+      continue
+    }
+
     try {
       const content = buildIssue({
         taskId: task.id,
