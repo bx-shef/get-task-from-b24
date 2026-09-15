@@ -414,7 +414,15 @@ try {
   process.exit(1)
 }
 
-const u = new URL(process.env.REDIS_URL)
+// ⚠ Разбор строки подключения — под своим сообщением. Node на кривом URL печатает
+// свойство input, то есть в терминал уехала бы вся строка вместе с паролем Redis.
+let u
+try {
+  u = new URL(process.env.REDIS_URL)
+} catch {
+  console.error('REDIS_URL не разбирается как URL — смотрите .env (значение не печатаем: в нём пароль)')
+  process.exit(1)
+}
 const connection = { host: u.hostname, port: Number(u.port || 6379), maxRetriesPerRequest: null }
 const queue = new Queue('task-events', { connection, prefix: 'bull' })
 
@@ -430,7 +438,11 @@ if (failed.length === 0) {
 } else {
   console.log('последние упавшие (до 20):')
   for (const job of failed) {
+    // ⚠ Причина приходит из текста исключения, а туда при неудачном стечении может
+    // попасть адрес вебхука — вместе с токеном в пути. Режем его до /rest/…/ прежде
+    // чем печатать: терминал оператора и так на виду, а failed-задания живут в Redis.
     const line = String(job.failedReason || '').split('\n')[0]
+      .replace(/https:\/\/[^\s]*\/rest\/[^\s]*/g, 'https://…/rest/…/')
     console.log('  ' + job.id + '  попыток ' + job.attemptsMade + '  ' + line)
   }
   console.log('дослать вручную: PORTAL=… TASKS=… FORCE=1 make backfill')

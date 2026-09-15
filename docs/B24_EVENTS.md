@@ -74,7 +74,7 @@
 | `user.get` | `user_brief` | источник | `src/b24/tasks.ts` (`fetchUserName`) | имя постановщика в описание; **необязателен** — без него будет «id N». Вызывается с `filter`, ответ сверяется по id: метод возвращает ФИЛЬТРОВАННЫЙ СПИСОК, и непонятый параметр означает «отдать всех» |
 | `app.info` | — | источник | `src/b24/tasks.ts` (`verifyPortalToken`) | доказательство подлинности установки: вызов уходит на адрес из реестра |
 | `tasks.task.add` | `task` | приёмник | `src/b24/tasks.ts` (`createTargetTask`) | создать задачу-копию (в т. ч. `GROUP_ID` и поле с ID задачи клиента) |
-| `task.item.userfield.add` | `task` | приёмник | разово, руками | завести поле `UF_SOURCE_TASK_ID` (docs/DEPLOY.md) |
+| `task.item.userfield.add` | `task` | приёмник | разово, руками | завести поля `UF_SOURCE_TASK_ID` и `UF_SOURCE_DOMAIN` — оба обязательны, на них держится дедупликация (docs/DEPLOY.md) |
 | `socialnetwork.api.workgroup.get` | **`socialnetwork`** | приёмник | `src/b24/issues.ts` (`fetchGroupDescription`) | описание группы клиента: из него берётся ссылка на репозиторий. ⚠ Единственный метод вне скоупа `task` — права вебхука пришлось расширить. Параметры вложены в `params` |
 | `tasks.task.list` | `task` | приёмник | `src/b24/issues.ts` (`listTasksToExport`), `src/b24/tasks.ts` (`findTransferredTasks`) | отбор задач на выгрузку и **дедупликация переносов** по паре `UF_SOURCE_TASK_ID` + `UF_SOURCE_DOMAIN`. Фильтр — объектной формой (замерено); совпадение пары и «поле пустое» решает наш код, а не портал |
 | `tasks.task.delete` | `task` | приёмник | `src/b24/tasks.ts` (`deleteTargetTask`) | удалить лишнюю задачу, если сверка после создания нашла вторую по той же паре. Шлём и `taskId`, и `id` — документация называет обязательными оба |
