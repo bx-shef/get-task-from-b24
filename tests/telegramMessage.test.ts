@@ -43,8 +43,8 @@ describe('buildDuplicateMessage', () => {
       sourceTaskId: 555,
       targetDomain: 'my.bitrix24.ru',
       keptTaskId: 11,
-      extraTaskId: 42,
-      removed: true,
+      extraTaskIds: [42],
+      outcome: 'removed',
     })
     expect(text).toContain('лишняя удалена')
     expect(text).toContain('client.bitrix24.ru')
@@ -59,11 +59,33 @@ describe('buildDuplicateMessage', () => {
       sourceTaskId: 555,
       targetDomain: 'my.bitrix24.ru',
       keptTaskId: 11,
-      extraTaskId: 42,
-      removed: false,
+      extraTaskIds: [42],
+      outcome: 'failed',
     })
     expect(text).toContain('НЕ удалось')
     expect(text).toContain('https://my.bitrix24.ru/company/personal/user/0/tasks/task/view/42/')
+  })
+})
+
+describe('buildDuplicateMessage: лишняя не наша', () => {
+  // ⚠ Третий исход появился по находке панели: писать «удалить не удалось» про задачу,
+  // которую прямо сейчас корректно удаляет второй воркер, — значит слать человека в
+  // портал за тем, чего там уже нет.
+  it('говорит, что лишнюю удалит тот перенос, который её создал', () => {
+    const text = buildDuplicateMessage({
+      domain: 'client.bitrix24.ru',
+      sourceTaskId: 555,
+      targetDomain: 'my.bitrix24.ru',
+      keptTaskId: 42,
+      extraTaskIds: [77, 91],
+      outcome: 'theirs',
+    })
+    expect(text).toContain('удалит тот перенос')
+    expect(text).not.toContain('НЕ удалось')
+    expect(text).not.toContain('руками')
+    // Все лишние названы: не названная останется сиротой, и узнать о ней неоткуда.
+    expect(text).toContain('view/77/')
+    expect(text).toContain('view/91/')
   })
 })
 

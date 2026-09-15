@@ -89,6 +89,24 @@ describe('transferTask', () => {
     expect(deps.createTask).not.toHaveBeenCalled()
   })
 
+  // ⚠ Правило «остаётся меньший ID» заявлено единым для всех путей — значит и здесь.
+  it('предпроверка нашла две задачи — исходом будет старшая из них', async () => {
+    const deps = makeDeps({ findTransferred: vi.fn(async () => [11, 42]) })
+    expect(await transferTask(555, deps, settings)).toEqual({ status: 'duplicate', targetTaskId: 11 })
+  })
+
+  // ⚠ Ветка «сбой ПОСЛЕ создания задачи»: ретраить нечего, повтор завёл бы вторую.
+  // Мутация «удалить весь блок» раньше проходила мимо тестов — находка панели.
+  it('сбой после создания задачи не уходит в ретрай', async () => {
+    const log = vi.fn((event: string) => {
+      if (event === 'created') throw new Error('логгер упал')
+    })
+    const deps = makeDeps({ log })
+
+    expect(await transferTask(555, deps, settings)).toEqual({ status: 'created', targetTaskId: 42 })
+    expect(log.mock.calls.map((c) => c[0])).toContain('failed-after-create')
+  })
+
   // ⚠ Порядок обязателен: спросить ДО создания.
   it('спрашивает портал раньше, чем создаёт задачу', async () => {
     const order: string[] = []
@@ -148,24 +166,60 @@ describe('сверка после создания', () => {
 
   // ⚠ Правило «остаётся меньший ID» одинаково у всех воркеров: столкнувшись, они
   // выберут одну и ту же задачу, и удалять будет ровно тот, кто создал вторую.
-  it('наша задача старше — её не трогаем, но о гонке сообщаем', async () => {
+  it('наша задача старше — её не трогаем и НЕ зовём человека удалять руками', async () => {
     const deps = makeDeps({ findTransferred: vi.fn()
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([42, 77]) })
 
     expect(await transferTask(555, deps, settings)).toEqual({ status: 'created', targetTaskId: 42 })
     expect(deps.deleteTask).not.toHaveBeenCalled()
-    expect(vi.mocked(deps.notify).mock.calls[0]?.[0]).toContain('дважды')
+    const race = vi.mocked(deps.notify).mock.calls[0]?.[0] ?? ''
+    expect(race).toContain('удалит тот перенос')
+    // ⚠ Найдено панелью: раньше сюда уходило «удалить лишнюю НЕ удалось… удалить
+    // руками» — про задачу, которую прямо сейчас корректно удаляет второй воркер.
+    expect(race).not.toContain('руками')
+    // Перенос при этом состоялся, и обычное сообщение тоже уходит — второе по счёту.
+    expect(vi.mocked(deps.notify).mock.calls[1]?.[0]).toContain('Задача создана')
   })
 
-  it('удалить дубль не вышло — сообщение зовёт человека, перенос не падает', async () => {
+  // ⚠ Столкнуться могут и три воркера. Не названная в сигнале задача останется на
+  // портале сиротой, и узнать о ней будет неоткуда.
+  it('лишних несколько — в сигнале названы все', async () => {
+    const deps = makeDeps({ findTransferred: vi.fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([42, 77, 91]) })
+
+    await transferTask(555, deps, settings)
+    const race = vi.mocked(deps.notify).mock.calls[0]?.[0] ?? ''
+    expect(race).toContain('view/77/')
+    expect(race).toContain('view/91/')
+  })
+
+  it('удалить дубль не вышло — пробуем дважды, потом зовём человека', async () => {
     const deps = makeDeps({
       findTransferred: vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([11, 42]),
       deleteTask: vi.fn(async () => { throw new Error('нет прав') }),
     })
 
     expect(await transferTask(555, deps, settings)).toEqual({ status: 'duplicate', targetTaskId: 11 })
+    // ⚠ Вторая попытка — по находке панели: не удалённая задача остаётся сиротой, и
+    // следующий поиск её уже не оспорит.
+    expect(deps.deleteTask).toHaveBeenCalledTimes(2)
     expect(vi.mocked(deps.notify).mock.calls[0]?.[0]).toContain('НЕ удалось')
+  })
+
+  it('со второй попытки удалилось — сообщение говорит «удалена»', async () => {
+    const deleteTask = vi.fn()
+      .mockImplementationOnce(() => { throw new Error('портал занят') })
+      .mockImplementationOnce(async () => {})
+    const deps = makeDeps({
+      findTransferred: vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([11, 42]),
+      deleteTask,
+    })
+
+    await transferTask(555, deps, settings)
+    expect(deleteTask).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(deps.notify).mock.calls[0]?.[0]).toContain('лишняя удалена')
   })
 
   // ⚠ Сама сверка НЕ имеет права уронить перенос: задача уже создана, а повтор завёл

@@ -120,6 +120,11 @@ export async function transferTask(
     const verdictAfter = await verifyUnique(created, taskId, deps, settings)
     if (verdictAfter.duplicate) return { status: 'duplicate', targetTaskId: verdictAfter.keptTaskId }
 
+    // ⚠ Ниже уходит обычное «задача создана» — в том числе когда сверка только что
+    // сообщила о гонке. Это не противоречие: в той ветке жить остаётся ИМЕННО наша
+    // задача, а лишнюю удалит тот перенос, который её создал. Два сообщения подряд
+    // здесь честнее одного: первое объясняет, откуда взялась вторая задача.
+
     // ⚠ Уведомление ставится в очередь отдельным шагом и НЕ роняет перенос: задача уже
     // создана, а повтор задания сходил бы в портал заново и завершился «дублем» —
     // работа впустую, а сообщение всё равно потеряно. Найдено вторым циклом ревью.
@@ -207,21 +212,31 @@ async function verifyUnique(
   const kept = found[0]
   if (found.length < 2 || kept === undefined) return { duplicate: false }
 
-  // Наша задача и есть самая ранняя: лишнюю создал кто-то другой, и удалит её он же —
-  // по этому же правилу. Сообщить всё равно надо.
-  const extra = kept === created ? (found[found.length - 1] ?? created) : created
+  // ⚠ Перечисляем ВСЕ лишние, а не одну: воркеров может столкнуться и три. Задача,
+  // не названная в сигнале, останется на портале сиротой, и узнать о ней будет неоткуда.
+  const extras = found.filter((id) => id !== kept)
+  const ours = kept !== created
 
-  let removed = false
-  if (extra === created) {
-    try {
-      await deps.deleteTask(created)
-      removed = true
-    } catch (error) {
-      deps.log('dedup-delete-failed', { domain, taskId: sourceTaskId, targetTaskId: created, reason: (error as Error).message })
+  let outcome: 'removed' | 'failed' | 'theirs' = 'theirs'
+  if (ours) {
+    // ⚠ Две попытки, а не одна. Не удалённая задача остаётся на портале сиротой с
+    // заполненными UF-полями: следующий поиск найдёт обе, вернёт старшую — и на дубль
+    // больше никто никогда не посмотрит. Единственным следом останется одно сообщение
+    // в Телеграм, которое можно и пропустить. Найдено панелью.
+    for (let attempt = 1; attempt <= 2 && outcome !== 'removed'; attempt++) {
+      try {
+        await deps.deleteTask(created)
+        outcome = 'removed'
+      } catch (error) {
+        outcome = 'failed'
+        deps.log('dedup-delete-failed', {
+          domain, taskId: sourceTaskId, targetTaskId: created, attempt, reason: (error as Error).message,
+        })
+      }
     }
   }
 
-  deps.log('dedup-duplicate', { domain, taskId: sourceTaskId, keptTaskId: kept, extraTaskId: extra, removed })
+  deps.log('dedup-duplicate', { domain, taskId: sourceTaskId, keptTaskId: kept, extraTaskIds: extras, outcome })
   await deps
     .notify(
       buildDuplicateMessage({
@@ -229,11 +244,13 @@ async function verifyUnique(
         sourceTaskId,
         targetDomain: settings.targetDomain,
         keptTaskId: kept,
-        extraTaskId: extra,
-        removed,
+        extraTaskIds: extras,
+        outcome,
       }),
     )
     .catch(() => {})
 
-  return kept === created ? { duplicate: false } : { duplicate: true, keptTaskId: kept }
+  // Наша задача и есть самая ранняя — перенос состоялся, исход обычный. Лишние удалят
+  // те переносы, которые их создали: правило «остаётся меньший ID» у всех одно.
+  return ours ? { duplicate: true, keptTaskId: kept } : { duplicate: false }
 }

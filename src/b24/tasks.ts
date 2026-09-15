@@ -6,7 +6,7 @@ import { callPortal, callWebhook } from './rest.js'
 import { B24Error } from './errors.js'
 import type { SourceTaskFull, TargetTaskFields } from '../domain/taskMapping.js'
 import { portalRestUrl } from '../domain/portals.js'
-import { taskListRows, ufValue } from './taskRows.js'
+import { taskListRows, ufValues } from './taskRows.js'
 import type { PortalAuth } from '../store/portalTokens.js'
 
 type Auth = Pick<PortalAuth, 'accessToken' | 'clientEndpoint'>
@@ -219,11 +219,15 @@ export function matchTransferred(result: unknown, key: TransferKey): number[] {
     const id = toNumber(pick(row, 'id', 'ID'))
     if (id === undefined || id <= 0) continue
 
-    const rawTaskId = ufValue(row, key.sourceTaskField).trim()
-    if (rawTaskId === '' || Number(rawTaskId) !== key.sourceTaskId) continue
+    // ⚠ Значения читаем списком: множественное UF-поле портал отдаёт массивом.
+    const taskIdMatches = ufValues(row, key.sourceTaskField)
+      .some((value) => value.trim() !== '' && Number(value) === key.sourceTaskId)
+    if (!taskIdMatches) continue
 
-    const rawDomain = ufValue(row, key.sourceDomainField).trim().toLowerCase()
-    if (rawDomain !== key.sourceDomain.trim().toLowerCase()) continue
+    const wanted = key.sourceDomain.trim().toLowerCase()
+    const domainMatches = ufValues(row, key.sourceDomainField)
+      .some((value) => value.trim().toLowerCase() === wanted)
+    if (!domainMatches) continue
 
     found.push(id)
   }
@@ -241,14 +245,22 @@ export function matchTransferred(result: unknown, key: TransferKey): number[] {
  */
 export async function findTransferredTasks(webhookUrl: string, key: TransferKey): Promise<number[]> {
   const result = await callWebhook<unknown>(webhookUrl, 'tasks.task.list', {
-    // ⚠ Фильтр ОБЪЕКТОМ — замерено на боевом портале; массив и форма v3 отвергаются
-    // с 400 (docs/PRODUCT.md, раздел 1).
-    filter: {
-      [key.sourceTaskField]: key.sourceTaskId,
-      [key.sourceDomainField]: key.sourceDomain,
-    },
+    // ⚠ Фильтр ОБЪЕКТОМ и ровно по ОДНОМУ ключу — ровно в границах замеренного
+    // (docs/PRODUCT.md, раздел 1): массив и форма v3 отвергаются с 400, а конъюнкция
+    // двух UF-полей на живом портале НЕ проверялась. Домен сверяет наш код ниже, и он
+    // всё равно не верит ответу портала — значит второй ключ не купил бы ничего, кроме
+    // незамеренного условия на пути, от которого зависит вся дедупликация. Найдено
+    // панелью.
+    filter: { [key.sourceTaskField]: key.sourceTaskId },
+    // ⚠ `ID` в select обязателен: без него сверять будет нечего — каждая строка
+    // отбракуется, и дедупликация замолчит навсегда. Стережётся тестом.
     select: ['ID', key.sourceTaskField, key.sourceDomainField],
-    order: { ID: 'asc' },
+    // ⚠ Порядок УБЫВАЮЩИЙ, хотя правило дедупликации — «остаётся меньший ID». Причина
+    // в отказе, а не в правиле: метод отдаёт страницу (около 50 строк), и если портал
+    // фильтр не понял и вернул всё подряд, при возрастающем порядке наша свежая задача
+    // в первую страницу не попала бы — поиск ответил бы «не переносили». При убывающем
+    // она первая. Сортировку по возрастанию делает `matchTransferred`, уже по своим.
+    order: { ID: 'desc' },
   })
   return matchTransferred(result, key)
 }
@@ -260,5 +272,15 @@ export async function findTransferredTasks(webhookUrl: string, key: TransferKey)
  * ⚠ И `taskId`, и `id`: страница метода называет обязательными оба имени.
  */
 export async function deleteTargetTask(webhookUrl: string, taskId: number): Promise<void> {
-  await callWebhook(webhookUrl, 'tasks.task.delete', { taskId, id: taskId })
+  const result = await callWebhook<{ task?: unknown; result?: unknown } | boolean | null>(
+    webhookUrl,
+    'tasks.task.delete',
+    { taskId, id: taskId },
+  )
+  // ⚠ Ответ проверяем: метод отдаёт `true`, а не молчание. Отказ без исключения
+  // (например, «нет права на удаление» в теле) иначе превратился бы в сообщение
+  // «лишняя задача удалена» про задачу, которая на портале осталась. Найдено панелью.
+  const ok = result === true
+    || (typeof result === 'object' && result !== null && (result.task === true || result.result === true))
+  if (!ok) throw new B24Error(`портал не подтвердил удаление задачи ${taskId}`, 'DELETE_NOT_CONFIRMED', false)
 }

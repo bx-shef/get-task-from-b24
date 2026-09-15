@@ -404,6 +404,10 @@ export BACKFILL_JS
 
 # ⚠ Те же правила, что у BACKFILL_JS: внутри блока НЕ используйте `$` — make развернёт
 # его как свою переменную, и в контейнер уедет искажённый скрипт.
+#
+# ⚠ Скрипт уезжает в `node` по stdin, и `await` на верхнем уровне работает только потому,
+# что Node 22 определяет такой ввод как ESM. Сменится базовый образ — отвалится молча,
+# с синтаксической ошибкой про `await`.
 define QUEUE_JS
 const BULLMQ = '/app/.output/server/node_modules/bullmq/dist/cjs/index.js'
 let Queue
@@ -425,10 +429,20 @@ try {
 }
 const connection = { host: u.hostname, port: Number(u.port || 6379), maxRetriesPerRequest: null }
 const queue = new Queue('task-events', { connection, prefix: 'bull' })
+const notify = new Queue('notifications', { connection, prefix: 'bull' })
 
-const counts = await queue.getJobCounts('waiting', 'active', 'delayed', 'failed', 'completed')
+// ⚠ `paused` показываем обязательно: у приостановленной очереди ждёт 0 и в работе 0,
+// и оператор прочитает это как «всё спокойно», хотя стоит всё. Найдено панелью.
+const counts = await queue.getJobCounts('waiting', 'active', 'delayed', 'failed', 'completed', 'paused')
 console.log('очередь переносов: ждёт ' + counts.waiting + ', в работе ' + counts.active
-  + ', отложено ' + counts.delayed + ', упало ' + counts.failed + ', готово ' + counts.completed)
+  + ', отложено ' + counts.delayed + ', упало ' + counts.failed + ', готово ' + counts.completed
+  + (counts.paused ? ', ПРИОСТАНОВЛЕНО ' + counts.paused : ''))
+
+// ⚠ И вторая очередь тоже: «задача переехала, а сообщение не ушло» иначе снова
+// становится невидимым — журнала, где это было видно, больше нет. Найдено панелью.
+const nc = await notify.getJobCounts('waiting', 'active', 'failed', 'paused')
+console.log('очередь уведомлений: ждёт ' + nc.waiting + ', в работе ' + nc.active
+  + ', упало ' + nc.failed + (nc.paused ? ', ПРИОСТАНОВЛЕНО ' + nc.paused : ''))
 
 // ⚠ Упавшие показываем с причиной: ради этого цель и существует. Хранилища отказов
 // нет, и очередь — единственное место, где видно «не доехало и вот почему».
@@ -443,12 +457,15 @@ if (failed.length === 0) {
     // чем печатать: терминал оператора и так на виду, а failed-задания живут в Redis.
     const line = String(job.failedReason || '').split('\n')[0]
       .replace(/https:\/\/[^\s]*\/rest\/[^\s]*/g, 'https://…/rest/…/')
-    console.log('  ' + job.id + '  попыток ' + job.attemptsMade + '  ' + line)
+    // `attemptsMade` — число УЖЕ провалившихся попыток, поэтому печатаем «из 5»:
+    // иначе строка читается как «осталось».
+    console.log('  ' + job.id + '  попыток ' + job.attemptsMade + ' из 5  ' + line)
   }
   console.log('дослать вручную: PORTAL=… TASKS=… FORCE=1 make backfill')
 }
 
 await queue.close()
+await notify.close()
 endef
 export QUEUE_JS
 

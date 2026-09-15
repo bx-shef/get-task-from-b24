@@ -34,7 +34,22 @@ export function taskListRows(result: unknown): TaskRow[] {
   return Array.isArray(rows) ? (rows as TaskRow[]) : []
 }
 
-/** Значение UF-поля строки ответа — с учётом обоих написаний ключа. */
+/**
+ * ВСЕ значения UF-поля строки ответа — с учётом обоих написаний ключа.
+ *
+ * ⚠ Список, а не одно значение: множественное пользовательское поле портал отдаёт
+ * МАССИВОМ. Читая такой ответ как строку, мы получили бы пусто — и на дедупликации это
+ * означало бы «не переносили» на каждом событии, то есть новую задачу каждый раз, при
+ * внешне исправном ответе портала. Найдено панелью.
+ */
+export function ufValues(row: TaskRow, code: string): string[] {
+  const raw = row[code] ?? row[camel(code)]
+  if (Array.isArray(raw)) return raw.map(str).filter((v) => v !== '')
+  const value = str(raw)
+  return value === '' ? [] : [value]
+}
+
+/** Первое значение UF-поля — для случаев, где поле заведомо одиночное. */
 export function ufValue(row: TaskRow, code: string): string {
-  return str(row[code] ?? row[camel(code)])
+  return ufValues(row, code)[0] ?? ''
 }

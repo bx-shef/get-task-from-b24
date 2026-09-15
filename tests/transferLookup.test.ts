@@ -75,19 +75,29 @@ describe('matchTransferred', () => {
 })
 
 describe('findTransferredTasks', () => {
-  it('шлёт фильтр ОБЪЕКТОМ и просит оба поля в select', async () => {
+  // ⚠ Фильтр — ровно в границах замеренного: объектом и по ОДНОМУ ключу. Конъюнкцию
+  // двух UF-полей на живом портале никто не проверял, а от этого вызова зависит вся
+  // дедупликация: непонятое условие даёт либо 400 на каждом переносе, либо пусто — то
+  // есть дубли. Домен сверяет наш код, портал об этом не просят. Найдено панелью.
+  it('шлёт фильтр объектом и по одному ключу, а в select — ID и оба поля', async () => {
     callWebhook.mockImplementation(async () => ({ tasks: [] }))
     await findTransferredTasks(hook, key)
 
     const [url, method, params] = callWebhook.mock.calls[0] as [string, string, {
       filter: Record<string, unknown>
       select: string[]
+      order: Record<string, unknown>
     }]
     expect(url).toBe(hook)
     expect(method).toBe('tasks.task.list')
-    expect(params.filter).toEqual({ UF_SOURCE_TASK_ID: 555, UF_SOURCE_DOMAIN: 'client.example.ru' })
-    // Без полей в select сверять было бы нечего — и «совпало» стало бы ложным у всех.
-    expect(params.select).toEqual(expect.arrayContaining(['UF_SOURCE_TASK_ID', 'UF_SOURCE_DOMAIN']))
+    expect(params.filter).toEqual({ UF_SOURCE_TASK_ID: 555 })
+    // ⚠ Точный список, а не «содержит»: без `ID` каждая строка ответа отбраковалась бы
+    // и дедупликация замолчала бы навсегда. Мутация «убрать ID» раньше проходила мимо
+    // тестов — находка панели.
+    expect(params.select).toEqual(['ID', 'UF_SOURCE_TASK_ID', 'UF_SOURCE_DOMAIN'])
+    // ⚠ Порядок убывающий: если портал фильтр не понял и отдал всё подряд, свежая
+    // задача обязана попасть в первую страницу ответа.
+    expect(params.order).toEqual({ ID: 'desc' })
   })
 
   // ⚠ Ошибку наверх, а не пустой список: «портал не ответил» — это «не знаю»,
@@ -104,5 +114,19 @@ describe('deleteTargetTask', () => {
     callWebhook.mockImplementation(async () => ({ task: true }))
     await deleteTargetTask(hook, 42)
     expect(callWebhook).toHaveBeenCalledWith(hook, 'tasks.task.delete', { taskId: 42, id: 42 })
+  })
+
+  it('понимает и голое true, и обёртку result', async () => {
+    callWebhook.mockImplementation(async () => true)
+    await deleteTargetTask(hook, 42)
+    callWebhook.mockImplementation(async () => ({ result: true }))
+    await deleteTargetTask(hook, 43)
+  })
+
+  // ⚠ Отказ без исключения («нет права на удаление» в теле ответа) иначе превратился бы
+  // в сообщение «лишняя задача удалена» про задачу, которая осталась. Найдено панелью.
+  it('не подтверждённое удаление — это ошибка, а не успех', async () => {
+    callWebhook.mockImplementation(async () => ({ task: false }))
+    await expect(deleteTargetTask(hook, 42)).rejects.toThrow(/не подтвердил удаление/)
   })
 })
