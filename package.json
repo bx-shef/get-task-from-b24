@@ -8,12 +8,13 @@
   },
   "scripts": {
     "dev": "nitro dev",
-    "build": "nitro build",
+    "build": "nitro build && pnpm build:ops",
     "preview": "node .output/server/index.mjs",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check": "pnpm lint && pnpm typecheck && pnpm test"
+    "check": "pnpm lint && pnpm typecheck && pnpm test",
+    "build:ops": "esbuild src/ops/exportIssues.ts --bundle --platform=node --format=esm --target=node22 --packages=external --outfile=.output/server/ops-issues.mjs"
   },
   "dependencies": {
     "@bitrix24/b24jssdk": "^2.2.0",

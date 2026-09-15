@@ -1,6 +1,6 @@
 .PHONY: help self-update compose-update ps logs logs-tail doctor transfers portals clients \
         client-add client-disable client-enable client-forget backfill \
-        prod-up prod-down prod-pull prod-redeploy backup
+        prod-up prod-down prod-pull prod-redeploy backup issues
 
 # Единственный интерфейс к боевому серверу. На сервере нет ни репозитория, ни pnpm —
 # только docker-compose.prod.yml, этот Makefile и .env (docs/DEPLOY.md).
@@ -398,6 +398,28 @@ await queue.close()
 console.log('итого: поставлено ' + queued + ', пропущено ' + skipped + '. Смотреть: make transfers')
 endef
 export BACKFILL_JS
+
+## Выгрузить задачи клиента в issue его репозитория: PORTAL=… [LIMIT=50] make issues
+#
+# ⚠ Репозиторий берётся из ОПИСАНИЯ группы клиента на нашем портале — не из реестра и не
+# из аргументов. Так у владельца одно место, где это задаётся, и оно же видно глазами.
+#
+# ⚠ Нет валидной ссылки в описании — цель отказывает целиком и НЕ трогает ни одной
+# задачи (решение владельца). Половинчатый прогон разбирать дороже, чем внятный отказ.
+#
+# ⚠ В отличие от `backfill`, логика живёт в собранном коде (`ops-issues.mjs` в образе), а
+# не в тексте этой цели: здесь её слишком много, чтобы дублировать и стеречь тестом.
+issues:
+	@d="$${PORTAL:-}"; lim="$${LIMIT:-50}"; \
+	[ -n "$$d" ] || { echo "Нужно: PORTAL=portal.example.by [LIMIT=50] make issues"; exit 1; }; \
+	$(REQUIRE_ENV); \
+	$(NORMALIZE_DOMAIN); \
+	$(GUARD_DOMAIN); \
+	case "$$lim" in ''|*[!0-9]*) echo "[make] LIMIT: ожидалось число, получено «$$lim»"; exit 1;; esac \
+	&& $(ESCAPE_DOMAIN) \
+	&& { [ "$$(grep -ci "^B24_PORTAL_[A-Za-z0-9_]*=$$esc," .env)" = "1" ] \
+	     || { echo "[make] $$d не найден среди активных клиентов. Смотреть: make clients"; exit 1; }; } \
+	&& $(COMPOSE) exec -T -e PORTAL="$$d" -e LIMIT="$$lim" app node .output/server/ops-issues.mjs
 
 ## Бэкап базы в backup-ГГГГ-ММ-ДД.sql.gz
 #
