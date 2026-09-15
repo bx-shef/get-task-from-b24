@@ -22,7 +22,7 @@
     "ioredis": "^6.0.0",
     "nitropack": "^2.13.4",
     "pg": "^8.23.0",
-    "zod": "^4.4.3"
+    "zod": "^4.6.2"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
