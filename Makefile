@@ -1,5 +1,5 @@
 .PHONY: help self-update compose-update ps logs logs-tail doctor transfers portals clients \
-        client-add client-disable client-enable client-forget \
+        client-add client-disable client-enable client-forget backfill \
         prod-up prod-down prod-pull prod-redeploy backup
 
 # Единственный интерфейс к боевому серверу. На сервере нет ни репозитория, ни pnpm —
@@ -280,6 +280,89 @@ transfers:
 portals:
 	@$(COMPOSE) exec -T db psql -U app -d app -c \
 		"select domain, member_id, expires_at, updated_at from portal_tokens order by domain;"
+
+## Дослать задачи, созданные ДО подключения: PORTAL=… TASKS=101,102 [FORCE=1] make backfill
+#
+# ⚠ Зачем цель вообще существует. Битрикс24 не присылает события задним числом: всё, что
+# клиент завёл до установки приложения, для нас не существует. А приходит клиент как раз
+# с накопленной пачкой `#support`-задач — то есть на КАЖДОМ подключении нужен способ
+# дослать их руками. Это часть онбординга, а не диагностика.
+#
+# ⚠ Задания кладутся в ТУ ЖЕ очередь, что и вебхук, с теми же параметрами повторов и тем
+# же `jobId`. Смысл именно в этом: критерии отбора, перенос, дедуп и Телеграм отрабатывают
+# штатным путём, а не вторым, который разойдётся с первым.
+#
+# ⚠ Скрипт уезжает в контейнер по stdin: на сервере нет ни репозитория, ни node_modules —
+# только этот Makefile. Он дублирует имя очереди, префикс и формат `jobId` из кода, и это
+# расхождение молчаливое по своей природе — поэтому его стережёт `tests/backfillTarget.test.ts`.
+#
+# ⚠ Уже известное задание по умолчанию НЕ пересоздаётся: повтор по тому же `jobId` — это
+# либо задача, которая уже переехала, либо та, что сейчас в работе. Осознанный повтор —
+# FORCE=1.
+backfill:
+	@d="$${PORTAL:-}"; ids="$${TASKS:-}"; \
+	if [ -z "$$d" ] || [ -z "$$ids" ]; then \
+	  echo "Нужно: PORTAL=portal.example.by TASKS=101,102 [FORCE=1] make backfill"; exit 1; fi; \
+	$(REQUIRE_ENV); \
+	$(NORMALIZE_DOMAIN); \
+	$(GUARD_DOMAIN); \
+	case "$$ids" in *[!0-9,]*) echo "[make] TASKS: только цифры и запятые, получено «$$ids»"; exit 1;; esac \
+	&& $(ESCAPE_DOMAIN) \
+	&& { [ "$$(grep -ci "^B24_PORTAL_[A-Za-z0-9_]*=$$esc," .env)" = "1" ] \
+	     || { echo "[make] $$d не найден среди активных клиентов. Смотреть: make clients"; exit 1; }; } \
+	&& printf '%s' "$$BACKFILL_JS" | $(COMPOSE) exec -T \
+	     -e PORTAL="$$d" -e TASKS="$$ids" -e FORCE="$${FORCE:-}" app node
+
+define BACKFILL_JS
+const BULLMQ = '/app/.output/server/node_modules/bullmq/dist/cjs/index.js'
+let Queue
+try {
+  ;({ Queue } = await import(BULLMQ))
+} catch {
+  console.error('не найден bullmq по пути ' + BULLMQ + ' — изменилась раскладка образа')
+  process.exit(1)
+}
+
+const domain = process.env.PORTAL
+const force = process.env.FORCE === '1'
+const ids = (process.env.TASKS || '').split(',').map((s) => s.trim()).filter(Boolean)
+const u = new URL(process.env.REDIS_URL)
+
+const queue = new Queue('task-events', {
+  connection: { host: u.hostname, port: Number(u.port || 6379), maxRetriesPerRequest: null },
+  prefix: 'bull',
+})
+
+let queued = 0
+let skipped = 0
+for (const id of ids) {
+  const key = domain + '--' + id
+  const known = await queue.getJob(key)
+  if (known) {
+    const state = await known.getState()
+    if (!force) {
+      console.log(id + ': пропущено, задание уже есть (' + state + '). Осознанный повтор — FORCE=1')
+      skipped++
+      continue
+    }
+    await known.remove()
+    console.log(id + ': прежнее задание удалено (' + state + '), ставлю заново')
+  }
+  await queue.add('transfer', { domain, taskId: Number(id) }, {
+    attempts: 5,
+    backoff: { type: 'exponential', delay: 10000 },
+    removeOnComplete: { count: 500 },
+    removeOnFail: { count: 1000 },
+    jobId: key,
+  })
+  console.log(id + ': поставлено')
+  queued++
+}
+
+await queue.close()
+console.log('итого: поставлено ' + queued + ', пропущено ' + skipped + '. Смотреть: make transfers')
+endef
+export BACKFILL_JS
 
 ## Бэкап базы в backup-ГГГГ-ММ-ДД.sql.gz
 #
