@@ -70,6 +70,25 @@ describe('цель make backfill', () => {
     expect(/try \{[^}]*await known\.remove\(\)/s.test(script)).toBe(true)
   })
 
+  it('гасит только блокировку, а не любую ошибку очереди', () => {
+    // ⚠ Широкий catch выдал бы упавший Redis за «занято, попробуйте позже» — авария
+    // уехала бы под правдоподобным текстом. Найдено вторым циклом панели.
+    expect(script).toContain("includes('locked by another worker')")
+    expect(script).toContain('throw error')
+  })
+
+  it('текст блокировки совпадает с тем, что бросает BullMQ', async () => {
+    // ⚠ Признак — подстрока чужого сообщения об ошибке: обновят библиотеку, изменят
+    // формулировку — и перехват начнёт пропускать наружу то, что должен гасить.
+    // Поэтому сверяем с исходником установленной версии.
+    const { readFileSync } = await import('node:fs')
+    const job = readFileSync(
+      join(import.meta.dirname, '..', 'node_modules', 'bullmq', 'dist', 'cjs', 'classes', 'job.js'),
+      'utf8',
+    )
+    expect(job).toContain('locked by another worker')
+  })
+
   it('держит тот же контракт по taskId, что и обработчик события', () => {
     expect(script).toContain('Number.isInteger(taskId) && taskId > 0')
   })
