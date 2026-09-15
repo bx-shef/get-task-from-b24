@@ -131,7 +131,8 @@ export function toB24Error(error: unknown): B24Error {
   // это не мелочь: так терялся код `expired_token`, который бросает наш обработчик
   // продления, — и слой `withPortalAuth` переставал узнавать «надо продлить токен».
   // Перенос задачи умирал окончательно там, где чинить было нечего.
-  // Боевой инцидент 2026-09-15: portal.standartno.by, задача 120378.
+  // Боевой инцидент 2026-09-15, разбор — в docs/WORKLOG.md. ⚠ Адрес портала клиента
+  // сюда не пишем: конвенция проекта держит их вне кода, место разбора — журнал.
   const original = (error as { originalError?: unknown } | null)?.originalError
   if (original instanceof B24Error) return original
 

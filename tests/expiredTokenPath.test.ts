@@ -3,9 +3,9 @@
  * доедет до `withPortalAuth`, продление не запустится, и перенос задачи умрёт
  * окончательно, хотя чинить нечего.
  *
- * ⚠ Тест написан по боевому инциденту 2026-09-15 (`portal.standartno.by`, задача
- * 120378): SDK заворачивает ЛЮБОЕ не-axios исключение из обработчика продления в свою
- * `AjaxError` с кодом `JSSDK_UNKNOWN_ERROR`, и наш код переставал узнавать `expired_token`.
+ * ⚠ Тест написан по боевому инциденту 2026-09-15 (разбор — в `docs/WORKLOG.md`): SDK
+ * заворачивает ЛЮБОЕ не-axios исключение из обработчика продления в свою `AjaxError` с
+ * кодом `JSSDK_UNKNOWN_ERROR`, и наш код переставал узнавать `expired_token`.
  */
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
