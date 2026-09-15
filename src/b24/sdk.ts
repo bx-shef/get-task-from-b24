@@ -126,6 +126,15 @@ const PERMANENT_SDK_CODE = /^JSSDK_/
 export function toB24Error(error: unknown): B24Error {
   if (error instanceof B24Error) return error
 
+  // ⚠ SDK заворачивает ЛЮБОЕ не-axios исключение, вылетевшее внутри HTTP-вызова, в свою
+  // `AjaxError` с кодом `JSSDK_UNKNOWN_ERROR`, пряча исходное в `originalError`. Для нас
+  // это не мелочь: так терялся код `expired_token`, который бросает наш обработчик
+  // продления, — и слой `withPortalAuth` переставал узнавать «надо продлить токен».
+  // Перенос задачи умирал окончательно там, где чинить было нечего.
+  // Боевой инцидент 2026-09-15: portal.standartno.by, задача 120378.
+  const original = (error as { originalError?: unknown } | null)?.originalError
+  if (original instanceof B24Error) return original
+
   const sdk = error as SdkLikeError
   const code = typeof sdk.code === 'string' && sdk.code ? sdk.code : 'SDK_ERROR'
   const status = typeof sdk.status === 'number' ? sdk.status : 0
@@ -142,6 +151,28 @@ function isRetryableSdkError(code: string, status: number): boolean {
   if (PERMANENT_SDK_CODE.test(code)) return false
   // Ответа не было вовсе: сеть, DNS, обрыв. Повторяем — как делал прежний слой.
   return true
+}
+
+/**
+ * Вызов метода REST v3.
+ *
+ * ⚠ Отдельно от v2 не ради симметрии: часть методов живёт ТОЛЬКО в v3 — например
+ * `tasks.task.chat.message.send`, её адрес `/rest/api/…`. Вызов такого метода через v2
+ * просто не найдёт его. Какой версией звать — свойство метода, а не наше предпочтение.
+ */
+export async function callSdkV3<T>(client: TypeB24, method: string, params: Record<string, unknown>): Promise<T> {
+  try {
+    const response = await client.actions.v3.call.make({ method, params })
+    if (!response.isSuccess) {
+      const first = response.getErrors().next()
+      throw toB24Error(first.done ? new Error(response.getErrorMessages().join('; ')) : first.value)
+    }
+    const payload = response.getData() as { result?: unknown } | undefined
+    if (payload?.result === undefined) throw new B24Error('портал ответил без result', 'NO_RESULT', true)
+    return payload.result as T
+  } catch (error) {
+    throw toB24Error(error)
+  }
 }
 
 /**

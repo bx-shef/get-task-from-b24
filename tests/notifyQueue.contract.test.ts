@@ -33,6 +33,7 @@ const config: AppConfig = {
   databaseUrl: DATABASE_URL,
   redisUrl: REDIS_URL,
   tokenEncKey: '0'.repeat(64),
+  issues: null,
 }
 
 // ⚠ СВОЙ префикс ключей. Ревью доказало прогоном: без него тест поднимал очереди с

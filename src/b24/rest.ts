@@ -4,7 +4,7 @@
  */
 import { B24Error, isRetryable } from './errors.js'
 import { DEFAULT_OAUTH_ENDPOINT, isKnownOauthHost, tokenEndpoint } from './oauthHosts.js'
-import { callSdk, createHookClient, createPortalClient } from './sdk.js'
+import { callSdk, callSdkV3, createHookClient, createPortalClient } from './sdk.js'
 import type { TypeB24 } from '@bitrix24/b24jssdk'
 import type { PortalAuth } from '../store/portalTokens.js'
 
@@ -31,6 +31,14 @@ export function callWebhook<T>(webhookUrl: string, method: string, params: Recor
     hookClient = { url: webhookUrl, client: createHookClient(webhookUrl) }
   }
   return callSdk<T>(hookClient.client, method, params)
+}
+
+/** Вызов метода REST v3 в НАШЕМ портале: часть методов живёт только там. */
+export function callWebhookV3<T>(webhookUrl: string, method: string, params: Record<string, unknown>): Promise<T> {
+  if (hookClient?.url !== webhookUrl) {
+    hookClient = { url: webhookUrl, client: createHookClient(webhookUrl) }
+  }
+  return callSdkV3<T>(hookClient.client, method, params)
 }
 
 /**

@@ -25,9 +25,26 @@ export interface AppConfig {
   targetSourceTaskField: string | null
   /** Код поля у нас, куда пишется домен портала клиента. `null` — не пишем. */
   targetSourceDomainField: string | null
+  /** Выгрузка задач в issue. `null` — не настроена, цель `make issues` откажет. */
+  issues: IssuesConfig | null
   databaseUrl: string
   redisUrl: string
   tokenEncKey: string
+}
+
+/**
+ * Настройки выгрузки задач в issue репозиториев клиентов.
+ *
+ * ⚠ Все три обязательны вместе. Половина настройки хуже, чем её отсутствие: цель
+ * запустится, дойдёт до середины и оставит часть задач выгруженными, а часть — нет.
+ */
+export interface IssuesConfig {
+  /** Токен GitHub с правом issues в приватных репозиториях клиентов. */
+  githubToken: string
+  /** Исполнитель у нас, по которому отбираются задачи на выгрузку. */
+  responsibleId: number
+  /** Код поля задачи, куда пишется `owner/repo#17`. */
+  issueField: string
 }
 
 export type Env = Record<string, string | undefined>
@@ -104,6 +121,8 @@ export function loadConfig(env: Env = process.env): AppConfig {
     throw new Error(`B24_TARGET_UF_SOURCE_DOMAIN: ожидался код пользовательского поля вида UF_SOURCE_DOMAIN, получено «${sourceDomainField}»`)
   }
 
+  const issues = readIssuesConfig(env)
+
   return {
     publicBaseUrl: required(env, 'PUBLIC_BASE_URL').replace(/\/+$/, ''),
     portals: parsePortals(env),
@@ -118,5 +137,39 @@ export function loadConfig(env: Env = process.env): AppConfig {
     databaseUrl: required(env, 'DATABASE_URL'),
     redisUrl: required(env, 'REDIS_URL'),
     tokenEncKey,
+    issues,
   }
+}
+
+/**
+ * ⚠ Читается «всё или ничего»: ни одной переменной — выгрузка просто не настроена и
+ * цель `make issues` скажет это внятно. Часть переменных — отказ на старте, потому что
+ * это опечатка, а не намерение.
+ */
+function readIssuesConfig(env: Env): IssuesConfig | null {
+  const githubToken = env.GITHUB_TOKEN?.trim() || ''
+  const responsible = env.B24_ISSUE_RESPONSIBLE_ID?.trim() || ''
+  const issueField = env.B24_TARGET_UF_ISSUE?.trim() || ''
+
+  if (!githubToken && !responsible && !issueField) return null
+
+  const missing = [
+    githubToken ? '' : 'GITHUB_TOKEN',
+    responsible ? '' : 'B24_ISSUE_RESPONSIBLE_ID',
+    issueField ? '' : 'B24_TARGET_UF_ISSUE',
+  ].filter(Boolean)
+  if (missing.length > 0) {
+    throw new Error(`Выгрузка задач в issue настроена наполовину: не хватает ${missing.join(', ')}`)
+  }
+
+  const responsibleId = Number(responsible)
+  if (!Number.isInteger(responsibleId) || responsibleId <= 0) {
+    throw new Error(`B24_ISSUE_RESPONSIBLE_ID: ожидался id сотрудника, получено «${responsible}»`)
+  }
+
+  if (!isUserFieldCode(issueField)) {
+    throw new Error(`B24_TARGET_UF_ISSUE: ожидался код пользовательского поля вида UF_ISSUE, получено «${issueField}»`)
+  }
+
+  return { githubToken, responsibleId, issueField }
 }
