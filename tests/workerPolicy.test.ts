@@ -4,14 +4,14 @@ import { UnrecoverableError } from 'bullmq'
 // ⚠ Подменяем вызовы портала целиком: проверяем ШОВ (куда и с чем уходит вызов), а не
 // сам вызов — он проверен в tests/transferLookup.test.ts.
 vi.mock('../src/b24/tasks.js', () => ({
-  createTargetTask: vi.fn(),
+  createTargetTask: vi.fn(async () => 42),
   deleteTargetTask: vi.fn(async () => {}),
   fetchSourceTask: vi.fn(),
   fetchUserName: vi.fn(),
   findTransferredTasks: vi.fn(async () => []),
 }))
 
-import { deleteTargetTask, findTransferredTasks } from '../src/b24/tasks.js'
+import { createTargetTask, deleteTargetTask, findTransferredTasks } from '../src/b24/tasks.js'
 import { buildTransferDeps, buildTransferSettings, isFinalFailure, log, toQueueError } from '../src/queue/workers.js'
 import { B24Error } from '../src/b24/errors.js'
 
@@ -93,7 +93,7 @@ describe('buildTransferDeps', () => {
       tokenEncKey: '0'.repeat(64),
     },
     pool: {},
-    queues: {},
+    queues: { notifications: { add: vi.fn(async () => {}) } },
   } as never
   const portal = { domain: 'c.ru', responsibleId: 17, clientId: 'a', clientSecret: 'b', groupId: 42 }
 
@@ -110,6 +110,25 @@ describe('buildTransferDeps', () => {
 
     await deps.deleteTask(42)
     expect(deleteTargetTask).toHaveBeenCalledWith('https://our.example/rest/1/hook/', 42)
+  })
+
+  // ⚠ Создание — тот же шов и та же цена: промах адресом означает задачу на чужом
+  // портале, а у нас её нет — и дедупликация её потом не найдёт, заводя ещё и ещё.
+  // Найдено вторым циклом панели.
+  it('задача создаётся на НАШЕМ портале', async () => {
+    const deps = buildTransferDeps(ctx, portal)
+    await deps.createTask({ TITLE: 'x' } as never)
+    expect(createTargetTask).toHaveBeenCalledWith('https://our.example/rest/1/hook/', { TITLE: 'x' })
+  })
+
+  // ⚠ Потеря уведомления молчалива по своей природе: задача переехала, а человек не
+  // узнал. Проверяем, что текст доезжает до очереди уведомлений.
+  it('уведомление кладётся в очередь уведомлений вместе с текстом', async () => {
+    const deps = buildTransferDeps(ctx, portal)
+    await deps.notify('привет')
+    const add = (ctx as unknown as { queues: { notifications: { add: ReturnType<typeof vi.fn> } } })
+      .queues.notifications.add
+    expect(add).toHaveBeenCalledWith('notify', { text: 'привет' }, expect.anything())
   })
 })
 

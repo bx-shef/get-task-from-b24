@@ -48,10 +48,25 @@ describe('matchTransferred', () => {
       { ID: '1', UF_SOURCE_TASK_ID: '777', UF_SOURCE_DOMAIN: 'client.example.ru' },
       { ID: '2', UF_SOURCE_TASK_ID: '555', UF_SOURCE_DOMAIN: 'other.example.ru' },
       { ID: '3' },
+      { ID: '0', UF_SOURCE_TASK_ID: '555', UF_SOURCE_DOMAIN: 'client.example.ru' },
       { ID: '4', UF_SOURCE_TASK_ID: '', UF_SOURCE_DOMAIN: 'client.example.ru' },
       { ID: '5', UF_SOURCE_TASK_ID: '555', UF_SOURCE_DOMAIN: 'client.example.ru' },
     ]
     expect(matchTransferred(rows, key)).toEqual([5])
+  })
+
+  // ⚠ Множественное пользовательское поле портал отдаёт МАССИВОМ. Прочитанное как
+  // строка, оно даёт пусто — и дедупликация молча отвечает «не переносили» на каждом
+  // событии, при внешне исправном ответе. Код от этого защищён, но без этого теста
+  // защита снималась бы мимо CI. Найдено вторым циклом панели.
+  it('значения массивом читаются наравне со строкой', () => {
+    const rows = [{ ID: '1001', UF_SOURCE_TASK_ID: ['555'], UF_SOURCE_DOMAIN: ['client.example.ru'] }]
+    expect(matchTransferred(rows, key)).toEqual([1001])
+  })
+
+  it('в массиве ищется любое совпадение, пустые значения не мешают', () => {
+    const rows = [{ ID: '1002', UF_SOURCE_TASK_ID: ['', 555], UF_SOURCE_DOMAIN: ['other.example.ru', 'client.example.ru'] }]
+    expect(matchTransferred(rows, key)).toEqual([1002])
   })
 
   it('домен сверяется без учёта регистра', () => {
@@ -100,6 +115,17 @@ describe('findTransferredTasks', () => {
     expect(params.order).toEqual({ ID: 'desc' })
   })
 
+  // ⚠ Целая страница в ответе — это «фильтр не применён», а не «нашлось много».
+  // Отвечать по такому ответу нельзя ничем, кроме ошибки: разные воркеры увидели бы
+  // разные страницы, каждый счёл бы себя старшим — и дубль не удалил бы никто.
+  it('целая страница в ответе — это ошибка, а не результат', async () => {
+    const page = Array.from({ length: 50 }, (_, i) => ({
+      ID: String(i + 1), UF_SOURCE_TASK_ID: '555', UF_SOURCE_DOMAIN: 'client.example.ru',
+    }))
+    callWebhook.mockImplementation(async () => ({ tasks: page }))
+    await expect(findTransferredTasks(hook, key)).rejects.toThrow(/фильтр поиска не применён/)
+  })
+
   // ⚠ Ошибку наверх, а не пустой список: «портал не ответил» — это «не знаю»,
   // и принять его за «не переносили» значит завести вторую задачу.
   it('ошибка портала пробрасывается наверх', async () => {
@@ -118,9 +144,9 @@ describe('deleteTargetTask', () => {
 
   it('понимает и голое true, и обёртку result', async () => {
     callWebhook.mockImplementation(async () => true)
-    await deleteTargetTask(hook, 42)
+    await expect(deleteTargetTask(hook, 42)).resolves.toBeUndefined()
     callWebhook.mockImplementation(async () => ({ result: true }))
-    await deleteTargetTask(hook, 43)
+    await expect(deleteTargetTask(hook, 43)).resolves.toBeUndefined()
   })
 
   // ⚠ Отказ без исключения («нет права на удаление» в теле ответа) иначе превратился бы

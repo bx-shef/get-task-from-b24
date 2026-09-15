@@ -19,6 +19,7 @@ import {
   buildDuplicateMessage,
   buildFailureMessage,
   buildUnverifiedMessage,
+  type DuplicateOutcome,
 } from '../domain/telegramMessage.js'
 import type { PortalConfig } from '../domain/portals.js'
 
@@ -117,7 +118,18 @@ export async function transferTask(
     created = await deps.createTask(fields)
     deps.log('created', { domain, taskId, targetTaskId: created, groupId: fields.GROUP_ID ?? 0 })
 
-    const verdictAfter = await verifyUnique(created, taskId, deps, settings)
+    // ⚠ Внешний перехват — не перестраховка: внутри `verifyUnique` защищены сетевые
+    // вызовы, но не `deps.log`. Упавший логгер после удаления нашей задачи улетал в
+    // общий `catch` ниже, и перенос возвращал ID УЖЕ УДАЛЁННОЙ задачи. Найдено вторым
+    // циклом панели.
+    let verdictAfter: UniqueVerdict = { duplicate: false }
+    try {
+      verdictAfter = await verifyUnique(created, taskId, deps, settings)
+    } catch (error) {
+      try {
+        deps.log('dedup-check-failed', { domain, taskId, targetTaskId: created, reason: (error as Error).message })
+      } catch { /* логгер и есть источник сбоя — глотаем молча */ }
+    }
     if (verdictAfter.duplicate) return { status: 'duplicate', targetTaskId: verdictAfter.keptTaskId }
 
     // ⚠ Ниже уходит обычное «задача создана» — в том числе когда сверка только что
@@ -202,7 +214,10 @@ async function verifyUnique(
   // заведёт новую. Обычная причина — код поля в окружении не совпал с порталом, а
   // `tasks.task.add` неизвестное поле молча проглотил.
   if (!found.includes(created)) {
-    deps.log('dedup-unverified', { domain, taskId: sourceTaskId, targetTaskId: created, found: found.length })
+    // ⚠ Перечисляем найденные ID, а не только их число: если по паре уже есть чужая
+    // задача, а нашей в ответе нет, человеку нужно знать, на что смотреть. Найдено
+    // вторым циклом панели.
+    deps.log('dedup-unverified', { domain, taskId: sourceTaskId, targetTaskId: created, found })
     await deps
       .notify(buildUnverifiedMessage({ domain, sourceTaskId, targetDomain: settings.targetDomain, targetTaskId: created }))
       .catch(() => {})
@@ -215,28 +230,42 @@ async function verifyUnique(
   // ⚠ Перечисляем ВСЕ лишние, а не одну: воркеров может столкнуться и три. Задача,
   // не названная в сигнале, останется на портале сиротой, и узнать о ней будет неоткуда.
   const extras = found.filter((id) => id !== kept)
-  const ours = kept !== created
+  // ⚠ Имя по существу: истинно, когда жить остаётся НЕ наша задача, — то есть когда
+  // удалять свою придётся нам. Прежнее `ours` читалось ровно наоборот, а цена ошибки
+  // здесь — «удалили не ту». Найдено вторым циклом панели.
+  const ourTaskIsExtra = kept !== created
 
-  let outcome: 'removed' | 'failed' | 'theirs' = 'theirs'
-  if (ours) {
-    // ⚠ Две попытки, а не одна. Не удалённая задача остаётся на портале сиротой с
-    // заполненными UF-полями: следующий поиск найдёт обе, вернёт старшую — и на дубль
-    // больше никто никогда не посмотрит. Единственным следом останется одно сообщение
-    // в Телеграм, которое можно и пропустить. Найдено панелью.
-    for (let attempt = 1; attempt <= 2 && outcome !== 'removed'; attempt++) {
+  let outcome: DuplicateOutcome = { kind: 'theirs' }
+  if (ourTaskIsExtra) {
+    outcome = { kind: 'failed', ourExtraTaskId: created }
+    // ⚠ Вторая попытка — только на ВОССТАНОВИМОЙ ошибке. Не удалённая задача остаётся
+    // сиротой с заполненными UF-полями: следующий поиск найдёт обе, вернёт старшую — и
+    // на дубль больше никто не посмотрит. Но повторять невосстановимое нельзя: «портал
+    // не подтвердил удаление» может означать, что задачу он всё-таки удалил, и второй
+    // заход получил бы отказ по несуществующей задаче — человека позвали бы удалять
+    // руками то, чего нет. Оба хвоста найдены панелью.
+    for (let attempt = 1; attempt <= 2; attempt++) {
       try {
         await deps.deleteTask(created)
-        outcome = 'removed'
+        outcome = { kind: 'removed', ourExtraTaskId: created }
+        break
       } catch (error) {
-        outcome = 'failed'
+        const retryable = (error as { retryable?: unknown } | null)?.retryable === true
         deps.log('dedup-delete-failed', {
-          domain, taskId: sourceTaskId, targetTaskId: created, attempt, reason: (error as Error).message,
+          domain, taskId: sourceTaskId, targetTaskId: created, attempt, retryable,
+          reason: (error as Error).message,
         })
+        if (!retryable) break
       }
     }
   }
 
-  deps.log('dedup-duplicate', { domain, taskId: sourceTaskId, keptTaskId: kept, extraTaskIds: extras, outcome })
+  // ⚠ Исход относится ТОЛЬКО к нашей задаче. Чужие лишние идут отдельной строкой: их
+  // удалят те переносы, которые их создали, и назвать их «удалёнными» значит соврать.
+  const otherExtraTaskIds = extras.filter((id) => id !== created)
+  deps.log('dedup-duplicate', {
+    domain, taskId: sourceTaskId, keptTaskId: kept, extraTaskIds: extras, outcome: outcome.kind,
+  })
   await deps
     .notify(
       buildDuplicateMessage({
@@ -244,13 +273,13 @@ async function verifyUnique(
         sourceTaskId,
         targetDomain: settings.targetDomain,
         keptTaskId: kept,
-        extraTaskIds: extras,
         outcome,
+        otherExtraTaskIds,
       }),
     )
     .catch(() => {})
 
   // Наша задача и есть самая ранняя — перенос состоялся, исход обычный. Лишние удалят
   // те переносы, которые их создали: правило «остаётся меньший ID» у всех одно.
-  return ours ? { duplicate: true, keptTaskId: kept } : { duplicate: false }
+  return ourTaskIsExtra ? { duplicate: true, keptTaskId: kept } : { duplicate: false }
 }

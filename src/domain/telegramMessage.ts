@@ -44,20 +44,26 @@ export function buildFailureMessage(input: FailureMessageInput): string {
   ].join('\n')
 }
 
+/**
+ * Что стало с НАШЕЙ лишней задачей:
+ * `removed` — удалили; `failed` — пытались и не смогли, дальше руками;
+ * `theirs` — лишняя не наша: жить остаётся наша, а чужую удалит тот перенос, который
+ * её создал.
+ */
+export type DuplicateOutcome =
+  | { kind: 'removed'; ourExtraTaskId: number }
+  | { kind: 'failed'; ourExtraTaskId: number }
+  | { kind: 'theirs' }
+
 export interface DuplicateMessageInput {
   domain: string
   sourceTaskId: number
   targetDomain: string
   /** Задача, которая остаётся жить, — созданная раньше. */
   keptTaskId: number
-  /** Все лишние задачи по той же паре. */
-  extraTaskIds: number[]
-  /**
-   * Что стало с лишней задачей:
-   * `removed` — мы её удалили; `failed` — пытались и не смогли, дальше руками;
-   * `theirs` — лишняя не наша, её удалит тот перенос, который её создал.
-   */
-  outcome: 'removed' | 'failed' | 'theirs'
+  outcome: DuplicateOutcome
+  /** Лишние задачи, созданные НЕ этим переносом. */
+  otherExtraTaskIds: number[]
 }
 
 function taskUrl(domain: string, taskId: number): string {
@@ -72,23 +78,28 @@ function taskUrl(domain: string, taskId: number): string {
  * постфактум, и человек обязан знать, что она случилась, — иначе редкий сбой становится
  * невидимым.
  *
- * ⚠ Три исхода различаются в тексте, и это не украшательство. Написать «удалить не
- * удалось» про задачу, которую прямо сейчас корректно удаляет второй воркер, значит
- * послать человека в портал за тем, чего там уже нет; пара таких сигналов — и их
- * перестают читать. Найдено панелью.
+ * ⚠ Исход относится ТОЛЬКО к нашей задаче, и текст обязан это различать. Написать
+ * «удалено: 42, 77» про задачу, которую мы не трогали, — то же враньё, что и «удалить
+ * не удалось» про ту, которую прямо сейчас корректно удаляет второй воркер. Оба варианта
+ * гонят человека в портал за тем, чего там нет; пара таких сигналов — и их перестают
+ * читать. Найдено двумя циклами панели подряд.
  */
 export function buildDuplicateMessage(input: DuplicateMessageInput): string {
   const head = {
     removed: '♻️ Задача перенеслась дважды — лишняя удалена',
     failed: '⚠️ Задача перенеслась дважды — удалить лишнюю НЕ удалось',
     theirs: '♻️ Задача перенеслась дважды — лишнюю удалит тот перенос, который её создал',
-  }[input.outcome]
+  }[input.outcome.kind]
 
-  const extras = input.extraTaskIds.length === 0
-    ? []
-    : input.outcome === 'removed'
-      ? [`Удалена: ${input.extraTaskIds.join(', ')}`]
-      : input.extraTaskIds.map((id) => `Лишняя: ${taskUrl(input.targetDomain, id)}`)
+  const ours = input.outcome.kind === 'removed'
+    ? [`Удалена: ${input.outcome.ourExtraTaskId}`]
+    : input.outcome.kind === 'failed'
+      ? [`Лишняя (удалить руками): ${taskUrl(input.targetDomain, input.outcome.ourExtraTaskId)}`]
+      : []
+
+  const others = input.otherExtraTaskIds.map(
+    (id) => `Лишняя, не наша (удалит её перенос): ${taskUrl(input.targetDomain, id)}`,
+  )
 
   return [
     head,
@@ -96,8 +107,8 @@ export function buildDuplicateMessage(input: DuplicateMessageInput): string {
     `Клиент: ${input.domain}`,
     `Задача у клиента: ${sourceTaskUrl(input.domain, input.sourceTaskId)}`,
     `Осталась у нас: ${taskUrl(input.targetDomain, input.keptTaskId)}`,
-    ...extras,
-    ...(input.outcome === 'failed' ? ['Удалить руками.'] : []),
+    ...ours,
+    ...others,
   ].join('\n')
 }
 

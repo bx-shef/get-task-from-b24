@@ -43,8 +43,8 @@ describe('buildDuplicateMessage', () => {
       sourceTaskId: 555,
       targetDomain: 'my.bitrix24.ru',
       keptTaskId: 11,
-      extraTaskIds: [42],
-      outcome: 'removed',
+      outcome: { kind: 'removed', ourExtraTaskId: 42 },
+      otherExtraTaskIds: [],
     })
     expect(text).toContain('лишняя удалена')
     expect(text).toContain('client.bitrix24.ru')
@@ -59,8 +59,8 @@ describe('buildDuplicateMessage', () => {
       sourceTaskId: 555,
       targetDomain: 'my.bitrix24.ru',
       keptTaskId: 11,
-      extraTaskIds: [42],
-      outcome: 'failed',
+      outcome: { kind: 'failed', ourExtraTaskId: 42 },
+      otherExtraTaskIds: [],
     })
     expect(text).toContain('НЕ удалось')
     expect(text).toContain('https://my.bitrix24.ru/company/personal/user/0/tasks/task/view/42/')
@@ -77,8 +77,8 @@ describe('buildDuplicateMessage: лишняя не наша', () => {
       sourceTaskId: 555,
       targetDomain: 'my.bitrix24.ru',
       keptTaskId: 42,
-      extraTaskIds: [77, 91],
-      outcome: 'theirs',
+      outcome: { kind: 'theirs' },
+      otherExtraTaskIds: [77, 91],
     })
     expect(text).toContain('удалит тот перенос')
     expect(text).not.toContain('НЕ удалось')
@@ -86,6 +86,26 @@ describe('buildDuplicateMessage: лишняя не наша', () => {
     // Все лишние названы: не названная останется сиротой, и узнать о ней неоткуда.
     expect(text).toContain('view/77/')
     expect(text).toContain('view/91/')
+  })
+})
+
+describe('buildDuplicateMessage: исход относится только к нашей задаче', () => {
+  // ⚠ Найдено вторым циклом панели: при столкновении трёх воркеров сообщение писало
+  // «Удалена: 42, 77» — хотя 77 мы не трогали, её удалит её же перенос. То же враньё,
+  // что и «удалить не удалось» про чужую корректную работу, только с другой стороны.
+  it('удалённой названа только наша, остальные — как чужие', () => {
+    const text = buildDuplicateMessage({
+      domain: 'client.bitrix24.ru',
+      sourceTaskId: 555,
+      targetDomain: 'my.bitrix24.ru',
+      keptTaskId: 11,
+      outcome: { kind: 'removed', ourExtraTaskId: 42 },
+      otherExtraTaskIds: [77],
+    })
+    expect(text).toContain('Удалена: 42')
+    expect(text).not.toContain('Удалена: 42, 77')
+    expect(text).toContain('Лишняя, не наша')
+    expect(text).toContain('view/77/')
   })
 })
 

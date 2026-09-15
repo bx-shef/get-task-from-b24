@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { transferTask, type TransferDeps, type TransferSettings } from '../src/pipeline/transfer.js'
 import type { SourceTaskFull } from '../src/domain/taskMapping.js'
+import { B24Error } from '../src/b24/errors.js'
 
 const settings: TransferSettings = {
   portal: { domain: 'client.bitrix24.ru', responsibleId: 17, clientId: 'a', clientSecret: 'b', groupId: 0 },
@@ -195,10 +196,10 @@ describe('сверка после создания', () => {
     expect(race).toContain('view/91/')
   })
 
-  it('удалить дубль не вышло — пробуем дважды, потом зовём человека', async () => {
+  it('удалить дубль не вышло по восстановимой причине — пробуем дважды, потом зовём человека', async () => {
     const deps = makeDeps({
       findTransferred: vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([11, 42]),
-      deleteTask: vi.fn(async () => { throw new Error('нет прав') }),
+      deleteTask: vi.fn(() => { throw new B24Error('портал занят', 'TIMEOUT', true) }),
     })
 
     expect(await transferTask(555, deps, settings)).toEqual({ status: 'duplicate', targetTaskId: 11 })
@@ -208,9 +209,22 @@ describe('сверка после создания', () => {
     expect(vi.mocked(deps.notify).mock.calls[0]?.[0]).toContain('НЕ удалось')
   })
 
+  // ⚠ Найдено вторым циклом панели: «портал не подтвердил удаление» может означать, что
+  // задачу он всё-таки удалил. Второй заход получил бы отказ по несуществующей задаче —
+  // и человека позвали бы удалять руками то, чего нет.
+  it('невосстановимый отказ удаления не повторяем', async () => {
+    const deps = makeDeps({
+      findTransferred: vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([11, 42]),
+      deleteTask: vi.fn(() => { throw new B24Error('нет прав', 'ACCESS_DENIED', false) }),
+    })
+
+    await transferTask(555, deps, settings)
+    expect(deps.deleteTask).toHaveBeenCalledTimes(1)
+  })
+
   it('со второй попытки удалилось — сообщение говорит «удалена»', async () => {
     const deleteTask = vi.fn()
-      .mockImplementationOnce(() => { throw new Error('портал занят') })
+      .mockImplementationOnce(() => { throw new B24Error('портал занят', 'TIMEOUT', true) })
       .mockImplementationOnce(async () => {})
     const deps = makeDeps({
       findTransferred: vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([11, 42]),
@@ -220,6 +234,20 @@ describe('сверка после создания', () => {
     await transferTask(555, deps, settings)
     expect(deleteTask).toHaveBeenCalledTimes(2)
     expect(vi.mocked(deps.notify).mock.calls[0]?.[0]).toContain('лишняя удалена')
+  })
+
+  // ⚠ Сверка не имеет права уронить перенос — буквально, включая упавший логгер: иначе
+  // наружу возвращался ID только что УДАЛЁННОЙ задачи. Найдено вторым циклом панели.
+  it('логгер упал посреди сверки — перенос всё равно успешен', async () => {
+    const log = vi.fn((event: string) => {
+      if (event === 'dedup-duplicate') throw new Error('логгер упал')
+    })
+    const deps = makeDeps({
+      findTransferred: vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([42, 77]),
+      log,
+    })
+
+    expect(await transferTask(555, deps, settings)).toEqual({ status: 'created', targetTaskId: 42 })
   })
 
   // ⚠ Сама сверка НЕ имеет права уронить перенос: задача уже создана, а повтор завёл
