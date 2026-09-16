@@ -43,3 +43,48 @@ describe('текст issue', () => {
     expect(issue.body.endsWith('/')).toBe(true)
   })
 })
+
+/**
+ * Описание приезжает из Битрикс24 в BBCode. Проверяется на НАСТОЯЩЕМ тексте из первого
+ * живого прогона `make issues` (2026-09-16): именно там владелец увидел `[b]` и `[list]`
+ * в issue. Выдуманный пример такого бы не показал — в нём не было бы ни ссылки внутри
+ * абзаца, ни списка без переводов строки между пунктами.
+ */
+describe('BBCode из описания задачи переводится в Markdown', () => {
+  const bbcode = [
+    '[b]Что наблюдаем[/b]',
+    'Форма заказа собирает данные. В сделку «Заказ с сайта'
+      + ' [url=https://example.test]example.test[/url] #6810» не попадает [b]ничего[/b].',
+    '',
+    '[list]',
+    '[*]выгрузить модуль в отдельную ветку[*]разобрать, что и как работает',
+    '[/list]',
+  ].join('\n')
+
+  const { body } = buildIssue({
+    taskId: 1747,
+    title: 'Синхронизация с сайтом',
+    description: bbcode,
+    ourDomain: 'our.example.by',
+    responsibleId: 29,
+  })
+
+  it('жирный, ссылка и список становятся разметкой Markdown', () => {
+    expect(body).toContain('**Что наблюдаем**')
+    expect(body).toContain('[example.test](https://example.test)')
+    expect(body).toContain('- выгрузить модуль в отдельную ветку')
+    expect(body).toContain('- разобрать, что и как работает')
+  })
+
+  it('от BBCode не остаётся следов', () => {
+    const description = body.split('\n---\n')[0] ?? ''
+    expect(description).not.toMatch(/\[\/?b\]|\[url=|\[list\]|\[\*\]/)
+  })
+
+  // ⚠ Служебный блок мы пишем сами и сразу на Markdown — он обязан пережить перевод
+  // нетронутым: по нему issue разрешается обратно в задачу.
+  it('служебный блок с доменом и ID остаётся на месте', () => {
+    expect(body).toContain('Битрикс24: `our.example.by`, задача `1747`')
+    expect(body).toContain('https://our.example.by/company/personal/user/29/tasks/task/view/1747/')
+  })
+})

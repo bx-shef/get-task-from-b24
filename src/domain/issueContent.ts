@@ -6,6 +6,7 @@
  * человек, читающий issue в репозитории клиента, не знает, куда отвечать.
  */
 import { clamp } from './taskMapping.js'
+import { bbcodeToMd } from './bbcode/toMarkdown.js'
 
 /** GitHub обрезает заголовок на 256 символах — режем сами, чтобы не молча. */
 const MAX_TITLE = 256
@@ -45,7 +46,14 @@ export function buildIssue(source: IssueSource): IssueContent {
     taskUrl(source.ourDomain, source.responsibleId, source.taskId),
   ].join('\n')
 
-  const description = (source.description ?? '').trim() || '_Описание в задаче пустое._'
+  // ⚠ Описание приезжает из Битрикс24 в BBCode, а GitHub понимает Markdown: без
+  // перевода в issue уезжает `[b]…[/b]` и `[url=…]` как есть — читаемо, но некрасиво, а
+  // списки и таблицы рассыпаются совсем. Конвертер — копия из соседнего проекта
+  // владельца, см. `bbcode/parser.ts`.
+  //
+  // ⚠ Переводим ТОЛЬКО описание. Служебный блок ниже мы пишем сами и сразу на Markdown;
+  // прогонять его через конвертер значило бы переводить то, что уже переведено.
+  const description = bbcodeToMd(source.description ?? '').trim() || '_Описание в задаче пустое._'
   const room = Math.max(0, MAX_BODY - tail.length)
 
   return { title, body: clamp(description, room) + tail }
