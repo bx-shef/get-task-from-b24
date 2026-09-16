@@ -9,6 +9,8 @@ const base: Env = {
   DATABASE_URL: 'postgres://app:app@localhost:5432/app',
   REDIS_URL: 'redis://localhost:6379',
   B24_TOKEN_ENC_KEY: '0'.repeat(64),
+  B24_TARGET_UF_SOURCE_TASK: 'UF_SOURCE_TASK_ID',
+  B24_TARGET_UF_SOURCE_DOMAIN: 'UF_SOURCE_DOMAIN',
 }
 
 describe('loadConfig', () => {
@@ -71,8 +73,16 @@ describe('B24_TARGET_UF_SOURCE_TASK', () => {
       .toBe('UF_AUTO_123456')
   })
 
-  it('не задан — поле не пишем', () => {
-    expect(loadConfig(base).targetSourceTaskField).toBeNull()
+  // ⚠ Оба поля обязательны: после снятия журнала переносов пара «ID + домен» —
+  // единственное место, где живёт связка, и без неё повторное событие завело бы
+  // вторую задачу (docs/PRODUCT.md, раздел 1а).
+  it('не задан — сервис не стартует', () => {
+    expect(() => loadConfig({ ...base, B24_TARGET_UF_SOURCE_TASK: undefined })).toThrow(/B24_TARGET_UF_SOURCE_TASK/)
+    expect(() => loadConfig({ ...base, B24_TARGET_UF_SOURCE_DOMAIN: undefined })).toThrow(/B24_TARGET_UF_SOURCE_DOMAIN/)
+  })
+
+  it('мусор в коде поля домена тоже роняет старт', () => {
+    expect(() => loadConfig({ ...base, B24_TARGET_UF_SOURCE_DOMAIN: 'DEADLINE' })).toThrow(/UF_SOURCE_DOMAIN/)
   })
 
   // ⚠ Значение становится ключом в запросе к порталу: опечатка вскрылась бы странным

@@ -21,10 +21,17 @@ export interface AppConfig {
   titlePrefix: string
   defaultDeadlineHours: number
   telegram: TelegramConfig | null
-  /** Код поля у нас, куда пишется ID задачи клиента. `null` — не пишем. */
-  targetSourceTaskField: string | null
-  /** Код поля у нас, куда пишется домен портала клиента. `null` — не пишем. */
-  targetSourceDomainField: string | null
+  /**
+   * Код поля у нас, куда пишется ID задачи клиента.
+   *
+   * ⚠ Обязателен. Пара «ID задачи + домен» — это ЕДИНСТВЕННОЕ место, где живёт связка
+   * «задача клиента → наша задача»: журнал переносов снят (docs/PRODUCT.md, раздел 1а).
+   * Без этих полей нечем ответить на вопрос «переносили ли уже» — сервис работал бы,
+   * заводя новую задачу на каждое повторное событие.
+   */
+  targetSourceTaskField: string
+  /** Код поля у нас, куда пишется домен портала клиента. Обязателен — см. выше. */
+  targetSourceDomainField: string
   /** Выгрузка задач в issue. `null` — не настроена, цель `make issues` откажет. */
   issues: IssuesConfig | null
   databaseUrl: string
@@ -111,13 +118,16 @@ export function loadConfig(env: Env = process.env): AppConfig {
 
   // ⚠ Код поля проверяем на старте: он подставляется КЛЮЧОМ в запрос к порталу, и
   // опечатка иначе вскрылась бы странным поведением задач, а не отказом сервиса.
-  const sourceTaskField = env.B24_TARGET_UF_SOURCE_TASK?.trim() || null
-  if (sourceTaskField && !isUserFieldCode(sourceTaskField)) {
+  //
+  // ⚠ И оба ОБЯЗАТЕЛЬНЫ: на них держится дедупликация переносов. Пустое значение —
+  // ровно тот случай из CLAUDE.md, когда сервис стартует, но работает неправильно.
+  const sourceTaskField = required(env, 'B24_TARGET_UF_SOURCE_TASK')
+  if (!isUserFieldCode(sourceTaskField)) {
     throw new Error(`B24_TARGET_UF_SOURCE_TASK: ожидался код пользовательского поля вида UF_SOURCE_TASK_ID, получено «${sourceTaskField}»`)
   }
 
-  const sourceDomainField = env.B24_TARGET_UF_SOURCE_DOMAIN?.trim() || null
-  if (sourceDomainField && !isUserFieldCode(sourceDomainField)) {
+  const sourceDomainField = required(env, 'B24_TARGET_UF_SOURCE_DOMAIN')
+  if (!isUserFieldCode(sourceDomainField)) {
     throw new Error(`B24_TARGET_UF_SOURCE_DOMAIN: ожидался код пользовательского поля вида UF_SOURCE_DOMAIN, получено «${sourceDomainField}»`)
   }
 

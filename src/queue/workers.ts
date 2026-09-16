@@ -16,11 +16,16 @@ import {
   type NotificationJob,
   type TaskEventJob,
 } from './queues.js'
-import { transferTask, type TransferSettings } from '../pipeline/transfer.js'
+import { transferTask, type TransferDeps, type TransferSettings } from '../pipeline/transfer.js'
 import { withPortalAuth } from '../b24/portalClient.js'
 import { B24Error } from '../b24/errors.js'
-import { createTargetTask, fetchSourceTask, fetchUserName } from '../b24/tasks.js'
-import { claim, markDone, markFailed } from '../store/transfers.js'
+import {
+  createTargetTask,
+  deleteTargetTask,
+  fetchSourceTask,
+  fetchUserName,
+  findTransferredTasks,
+} from '../b24/tasks.js'
 import { findPortal, type PortalConfig } from '../domain/portals.js'
 import { sendTelegramMessage } from '../notify/telegram.js'
 import type { AppContext } from '../runtime.js'
@@ -80,9 +85,45 @@ export function buildTransferSettings(config: AppConfig, portal: PortalConfig): 
   }
 }
 
-export function startWorkers(ctx: AppContext): { tasks: Worker; notifications: Worker } {
+/**
+ * Сборка побочных эффектов переноса — тот же ШОВ, что и `buildTransferSettings`, и
+ * вынесена из замыкания по той же причине: изнутри воркера её не проверить, а ошибка
+ * здесь тихая и дорогая.
+ *
+ * ⚠ Все три вызова про НАШ портал идут на `targetWebhookUrl`. Промах адресом означал бы
+ * поиск дублей и удаление задач на ЧУЖОМ портале. ⚠ Коды UF-полей обязаны быть теми же,
+ * что уходят в создаваемую задачу (`buildTransferSettings`): разъедься они — задача
+ * пишет одно, а ищется по другому, и дубль появляется на каждом событии. Найдено панелью.
+ */
+export function buildTransferDeps(ctx: AppContext, portal: PortalConfig): TransferDeps {
   const { config, pool, queues } = ctx
   const access = { pool, encKey: config.tokenEncKey }
+
+  return {
+    loadTask: (_domain, taskId) =>
+      withPortalAuth(access, portal, async (auth) => {
+        const task = await fetchSourceTask(auth, taskId)
+        return { ...task, createdByName: await fetchUserName(auth, task.createdBy) }
+      }),
+    createTask: (fields) => createTargetTask(config.targetWebhookUrl, fields),
+    findTransferred: (domain, taskId) =>
+      findTransferredTasks(config.targetWebhookUrl, {
+        sourceDomain: domain,
+        sourceTaskId: taskId,
+        sourceTaskField: config.targetSourceTaskField,
+        sourceDomainField: config.targetSourceDomainField,
+      }),
+    deleteTask: (targetTaskId) => deleteTargetTask(config.targetWebhookUrl, targetTaskId),
+    notify: async (text) => {
+      await queues.notifications.add('notify', { text }, NOTIFY_JOB_OPTIONS)
+    },
+    now: () => new Date(),
+    log,
+  }
+}
+
+export function startWorkers(ctx: AppContext): { tasks: Worker; notifications: Worker } {
+  const { config, queues } = ctx
 
   async function runTransfer(job: JobAttempt & { data: TaskEventJob }): Promise<void> {
     const portal = findPortal(config.portals, job.data.domain)
@@ -95,22 +136,7 @@ export function startWorkers(ctx: AppContext): { tasks: Worker; notifications: W
 
     await transferTask(
       job.data.taskId,
-      {
-        loadTask: (_domain, taskId) =>
-          withPortalAuth(access, portal, async (auth) => {
-            const task = await fetchSourceTask(auth, taskId)
-            return { ...task, createdByName: await fetchUserName(auth, task.createdBy) }
-          }),
-        createTask: (fields) => createTargetTask(config.targetWebhookUrl, fields),
-        claim: (domain, taskId) => claim(pool, domain, taskId),
-        markDone: (domain, taskId, targetTaskId) => markDone(pool, domain, taskId, targetTaskId),
-        markFailed: (domain, taskId, reason) => markFailed(pool, domain, taskId, reason),
-        notify: async (text) => {
-          await queues.notifications.add('notify', { text }, NOTIFY_JOB_OPTIONS)
-        },
-        now: () => new Date(),
-        log,
-      },
+      buildTransferDeps(ctx, portal),
       buildTransferSettings(config, portal),
       { isFinalFailure: (error) => isFinalFailure(job, error) },
     )

@@ -3,7 +3,6 @@ import { getContext } from '../../../src/runtime.js'
 import { readLimitedBody } from '../../../src/http/readLimitedBody.js'
 import { parseBody, parseEnvelope, parseTaskAddEvent } from '../../../src/b24/eventPayload.js'
 import { deletePortal, verifyApplicationToken } from '../../../src/store/portalTokens.js'
-import { markFailed } from '../../../src/store/transfers.js'
 import { findPortal } from '../../../src/domain/portals.js'
 import { jobId, TASK_JOB_OPTIONS } from '../../../src/queue/queues.js'
 import { log } from '../../../src/queue/workers.js'
@@ -77,8 +76,10 @@ export default defineEventHandler(async (event) => {
     await queues.taskEvents.add(
       'transfer',
       { domain: portal.domain, taskId: parsed.taskId },
-      // ⚠ Дедуп по jobId дублирует журнал намеренно: очередь чистится по
-      // removeOnComplete, а журнал живёт вечно.
+      // ⚠ Дедуп по jobId — защита от повторной доставки ОДНОГО события, и только
+      // пока задание лежит в очереди (дальше его чистит removeOnComplete). Того, что
+      // задача уже переносилась вчера, он не знает: это спрашивается у портала по
+      // UF-полям задачи, в воркере.
       { ...TASK_JOB_OPTIONS, jobId: jobId(portal.domain, parsed.taskId) },
     )
   } catch (error) {
@@ -87,11 +88,10 @@ export default defineEventHandler(async (event) => {
     // и тогда потеряется не одно событие, а все следующие. Единственное, что здесь
     // можно сделать полезного, — оставить след, по которому задачу заведут руками.
     const reason = `очередь недоступна: ${(error as Error).message}`
+    // ⚠ Следом остаётся только эта строка лога. Хранилища отказов нет намеренно
+    // (docs/PRODUCT.md, раздел 1а): очередь и есть механизм надёжности, а на случай
+    // «событие не дошло вовсе» задача досылается руками — `make backfill`.
     log('event-lost', { domain: portal.domain, taskId: parsed.taskId, reason })
-    // ⚠ markFailed — upsert, но уже перенесённую задачу он не трогает: повторное
-    // событие при лежащем Redis не должно переписывать успешный перенос в «провал»,
-    // иначе человек заведёт задачу руками и получится дубль (находка ревью).
-    await markFailed(pool, portal.domain, parsed.taskId, reason).catch(() => {})
     return { ok: true, warning: 'queue_unavailable' }
   }
 

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { buildCreatedMessage, buildFailureMessage } from '../src/domain/telegramMessage.js'
+import {
+  buildCreatedMessage,
+  buildDuplicateMessage,
+  buildFailureMessage,
+  buildUnverifiedMessage,
+} from '../src/domain/telegramMessage.js'
 
 describe('buildCreatedMessage', () => {
   it('несёт обе ссылки и клиента', () => {
@@ -24,5 +29,99 @@ describe('buildFailureMessage', () => {
     expect(text).toContain('client.bitrix24.ru')
     expect(text).toContain('/tasks/task/view/555/')
     expect(text).toContain('таймаут')
+  })
+})
+
+/**
+ * Сообщения о сбоях дедупликации. ⚠ Оба обязаны называть портал и обе задачи: журнала
+ * переносов больше нет, и кроме этого сообщения человеку негде узнать, что случилось.
+ */
+describe('buildDuplicateMessage', () => {
+  it('удалённый дубль: видно, что осталось и что удалено', () => {
+    const text = buildDuplicateMessage({
+      domain: 'client.bitrix24.ru',
+      sourceTaskId: 555,
+      targetDomain: 'my.bitrix24.ru',
+      keptTaskId: 11,
+      outcome: { kind: 'removed', ourExtraTaskId: 42 },
+      otherExtraTaskIds: [],
+    })
+    expect(text).toContain('лишняя удалена')
+    expect(text).toContain('client.bitrix24.ru')
+    expect(text).toContain('/555/')
+    expect(text).toContain('view/11/')
+    expect(text).toContain('42')
+  })
+
+  it('удалить не вышло — сообщение даёт ССЫЛКУ на лишнюю, её удалять руками', () => {
+    const text = buildDuplicateMessage({
+      domain: 'client.bitrix24.ru',
+      sourceTaskId: 555,
+      targetDomain: 'my.bitrix24.ru',
+      keptTaskId: 11,
+      outcome: { kind: 'failed', ourExtraTaskId: 42 },
+      otherExtraTaskIds: [],
+    })
+    expect(text).toContain('НЕ удалось')
+    expect(text).toContain('https://my.bitrix24.ru/company/personal/user/0/tasks/task/view/42/')
+  })
+})
+
+describe('buildDuplicateMessage: лишняя не наша', () => {
+  // ⚠ Третий исход появился по находке панели: писать «удалить не удалось» про задачу,
+  // которую прямо сейчас корректно удаляет второй воркер, — значит слать человека в
+  // портал за тем, чего там уже нет.
+  it('говорит, что лишнюю удалит тот перенос, который её создал', () => {
+    const text = buildDuplicateMessage({
+      domain: 'client.bitrix24.ru',
+      sourceTaskId: 555,
+      targetDomain: 'my.bitrix24.ru',
+      keptTaskId: 42,
+      outcome: { kind: 'theirs' },
+      otherExtraTaskIds: [77, 91],
+    })
+    expect(text).toContain('удалит тот перенос')
+    expect(text).not.toContain('НЕ удалось')
+    expect(text).not.toContain('руками')
+    // Все лишние названы: не названная останется сиротой, и узнать о ней неоткуда.
+    expect(text).toContain('view/77/')
+    expect(text).toContain('view/91/')
+  })
+})
+
+describe('buildDuplicateMessage: исход относится только к нашей задаче', () => {
+  // ⚠ Найдено вторым циклом панели: при столкновении трёх воркеров сообщение писало
+  // «Удалена: 42, 77» — хотя 77 мы не трогали, её удалит её же перенос. То же враньё,
+  // что и «удалить не удалось» про чужую корректную работу, только с другой стороны.
+  it('удалённой названа только наша, остальные — как чужие', () => {
+    const text = buildDuplicateMessage({
+      domain: 'client.bitrix24.ru',
+      sourceTaskId: 555,
+      targetDomain: 'my.bitrix24.ru',
+      keptTaskId: 11,
+      outcome: { kind: 'removed', ourExtraTaskId: 42 },
+      otherExtraTaskIds: [77],
+    })
+    expect(text).toContain('Удалена: 42')
+    expect(text).not.toContain('Удалена: 42, 77')
+    expect(text).toContain('Лишняя, не наша')
+    expect(text).toContain('view/77/')
+  })
+})
+
+describe('buildUnverifiedMessage', () => {
+  // ⚠ Сообщение обязано назвать причину: без подсказки про коды полей человек будет
+  // искать поломку в переносе, которого нет — задача-то создалась.
+  it('называет обе переменные окружения, с которых начинать', () => {
+    const text = buildUnverifiedMessage({
+      domain: 'client.bitrix24.ru',
+      sourceTaskId: 555,
+      targetDomain: 'my.bitrix24.ru',
+      targetTaskId: 42,
+    })
+    expect(text).toContain('Дедупликация не работает')
+    expect(text).toContain('B24_TARGET_UF_SOURCE_TASK')
+    expect(text).toContain('B24_TARGET_UF_SOURCE_DOMAIN')
+    expect(text).toContain('view/42/')
   })
 })

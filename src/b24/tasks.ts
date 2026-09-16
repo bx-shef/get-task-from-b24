@@ -7,6 +7,7 @@ import type { PortalClientAuth } from './sdk.js'
 import { B24Error } from './errors.js'
 import type { SourceTaskFull, TargetTaskFields } from '../domain/taskMapping.js'
 import { portalRestUrl } from '../domain/portals.js'
+import { taskListRows, ufValues } from './taskRows.js'
 
 /**
  * ⚠ Берём тип из `sdk.ts`, а не объявляем свой такой же: три структурно одинаковых
@@ -197,4 +198,118 @@ export async function bindAppEvents(auth: Auth, handlerUrl: string): Promise<voi
   for (const event of BOUND_EVENTS) {
     await bindEvent(auth, event, handlerUrl)
   }
+}
+
+/**
+ * Размер страницы `tasks.task.list` по умолчанию. Ответ ровно в страницу означает, что
+ * фильтр не применён: по одному ID задачи-источника столько задач быть не может.
+ */
+const PAGE_SIZE = 50
+
+/** Ключ, по которому задача у нас находится обратно: портал клиента + задача в нём. */
+export interface TransferKey {
+  sourceDomain: string
+  sourceTaskId: number
+  /** Код поля у нас, где лежит ID задачи клиента. */
+  sourceTaskField: string
+  /** Код поля у нас, где лежит домен портала клиента. */
+  sourceDomainField: string
+}
+
+/**
+ * Какие из вернувшихся задач ДЕЙСТВИТЕЛЬНО относятся к этой паре — чистая функция.
+ *
+ * ⚠ Ответ портала перепроверяется здесь целиком, и это не перестраховка. Замерено
+ * (docs/PRODUCT.md, раздел 1): непонятый фильтр Битрикс24 не отвергает — он возвращает
+ * ВСЁ. На дедупликации это худшая из возможных ошибок: «нашлось пятьдесят» было бы
+ * принято за «уже перенесена», и задача клиента не создалась бы никогда и молча.
+ *
+ * ⚠ ID сравниваем числом, домен — без регистра: портал отдаёт значения строками даже
+ * для числового поля, а домен мы храним нормализованным.
+ */
+export function matchTransferred(result: unknown, key: TransferKey): number[] {
+  const found: number[] = []
+
+  for (const row of taskListRows(result)) {
+    const id = toNumber(pick(row, 'id', 'ID'))
+    if (id === undefined || id <= 0) continue
+
+    // ⚠ Значения читаем списком: множественное UF-поле портал отдаёт массивом.
+    const taskIdMatches = ufValues(row, key.sourceTaskField)
+      .some((value) => value.trim() !== '' && Number(value) === key.sourceTaskId)
+    if (!taskIdMatches) continue
+
+    const wanted = key.sourceDomain.trim().toLowerCase()
+    const domainMatches = ufValues(row, key.sourceDomainField)
+      .some((value) => value.trim().toLowerCase() === wanted)
+    if (!domainMatches) continue
+
+    found.push(id)
+  }
+
+  // По возрастанию ID: старшая задача — та, что создана раньше, и именно она остаётся
+  // жить, если задач оказалось две (docs/PROCESSING.md → «Дедупликация»).
+  return found.sort((a, b) => a - b)
+}
+
+/**
+ * Перенесённые задачи у нас по паре «портал клиента + задача в нём».
+ *
+ * ⚠ Это замена журнала переносов: связка живёт в самих задачах, а не во втором месте
+ * рядом с ними (docs/PRODUCT.md, раздел 1а).
+ */
+export async function findTransferredTasks(webhookUrl: string, key: TransferKey): Promise<number[]> {
+  const result = await callWebhook<unknown>(webhookUrl, 'tasks.task.list', {
+    // ⚠ Фильтр ОБЪЕКТОМ и ровно по ОДНОМУ ключу — ровно в границах замеренного
+    // (docs/PRODUCT.md, раздел 1): массив и форма v3 отвергаются с 400, а конъюнкция
+    // двух UF-полей на живом портале НЕ проверялась. Домен сверяет наш код ниже, и он
+    // всё равно не верит ответу портала — значит второй ключ не купил бы ничего, кроме
+    // незамеренного условия на пути, от которого зависит вся дедупликация. Найдено
+    // панелью.
+    filter: { [key.sourceTaskField]: key.sourceTaskId },
+    // ⚠ `ID` в select обязателен: без него сверять будет нечего — каждая строка
+    // отбракуется, и дедупликация замолчит навсегда. Стережётся тестом.
+    select: ['ID', key.sourceTaskField, key.sourceDomainField],
+    // ⚠ Порядок УБЫВАЮЩИЙ, хотя правило дедупликации — «остаётся меньший ID». Причина
+    // в отказе, а не в правиле: метод отдаёт страницу (около 50 строк), и если портал
+    // фильтр не понял и вернул всё подряд, при возрастающем порядке наша свежая задача
+    // в первую страницу не попала бы — поиск ответил бы «не переносили». При убывающем
+    // она первая. Сортировку по возрастанию делает `matchTransferred`, уже по своим.
+    order: { ID: 'desc' },
+  })
+  // ⚠ Целая страница в ответе — это НЕ «нашлось много», это «фильтр не применён».
+  // Отвечать по такому ответу нельзя ни «переносили» (он про чужие задачи), ни «не
+  // переносили» (нужная могла остаться за страницей, а решение о МИНИМАЛЬНОМ ID разные
+  // воркеры приняли бы по разным страницам — и не удалил бы никто). Единственный
+  // честный ответ — «не знаю», то есть ошибка: перенос уйдёт на ретрай и разбудит
+  // человека, а не заведёт дубль. Найдено вторым циклом панели.
+  if (taskListRows(result).length >= PAGE_SIZE) {
+    throw new B24Error(
+      'портал вернул целую страницу задач — похоже, фильтр поиска не применён',
+      'FILTER_IGNORED',
+      true,
+    )
+  }
+
+  return matchTransferred(result, key)
+}
+
+/**
+ * Удаление задачи у нас. Нужно ровно одному случаю: сверка после создания нашла вторую
+ * задачу по той же паре (docs/PROCESSING.md → «Дедупликация»).
+ *
+ * ⚠ И `taskId`, и `id`: страница метода называет обязательными оба имени.
+ */
+export async function deleteTargetTask(webhookUrl: string, taskId: number): Promise<void> {
+  const result = await callWebhook<{ task?: unknown; result?: unknown } | boolean | null>(
+    webhookUrl,
+    'tasks.task.delete',
+    { taskId, id: taskId },
+  )
+  // ⚠ Ответ проверяем: метод отдаёт `true`, а не молчание. Отказ без исключения
+  // (например, «нет права на удаление» в теле) иначе превратился бы в сообщение
+  // «лишняя задача удалена» про задачу, которая на портале осталась. Найдено панелью.
+  const ok = result === true
+    || (typeof result === 'object' && result !== null && (result.task === true || result.result === true))
+  if (!ok) throw new B24Error(`портал не подтвердил удаление задачи ${taskId}`, 'DELETE_NOT_CONFIRMED', false)
 }

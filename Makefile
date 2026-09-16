@@ -1,4 +1,4 @@
-.PHONY: help self-update compose-update ps logs logs-tail doctor transfers portals clients \
+.PHONY: help self-update compose-update ps logs logs-tail doctor queue lost portals clients \
         client-add client-disable client-enable client-forget backfill \
         prod-up prod-down prod-pull prod-redeploy backup issues
 
@@ -270,11 +270,22 @@ doctor:
 	@echo "— контейнеры —"; $(COMPOSE) ps
 	@echo "— health —"; $(COMPOSE) exec -T app wget -qO- http://localhost:3000/health || echo "приложение не отвечает"
 
-## Последние 20 записей журнала переносов
-transfers:
-	@$(COMPOSE) exec -T db psql -U app -d app -c \
-		"select domain, source_task_id, target_task_id, status, left(coalesce(reason,''),60) as reason, updated_at \
-		 from transfers order by updated_at desc limit 20;"
+## Что в очереди переносов: сколько ждёт, сколько в работе, что упало
+#
+# ⚠ Это замена прежней цели `make transfers`. Журнала переносов больше нет: связка
+# «задача клиента → наша задача» живёт в UF-полях самой задачи (docs/PRODUCT.md,
+# раздел 1а), а «что доехало» смотрится на портале. Здесь остаётся вопрос, на который
+# портал не отвечает: что ещё НЕ доехало и почему.
+queue:
+	@printf '%s' "$$QUEUE_JS" | $(COMPOSE) exec -T app node
+
+## События, потерянные при недоступном Redis (в очереди их нет — только в логе)
+#
+# ⚠ Отдельной целью, а не `make logs | grep`: у `logs` стоит `-f`, в пайпе он не
+# завершается, а grep уходит в блочную буферизацию — оператор получает пустой
+# зависший терминал и делает вывод «потерь не было». Найдено вторым циклом панели.
+lost:
+	@$(COMPOSE) logs --no-log-prefix --tail=20000 app | grep event-lost || echo "потерянных событий не видно (в пределах 20000 строк лога)"
 
 ## Какие порталы установлены и когда продлевались их токены
 portals:
@@ -333,12 +344,26 @@ try {
 const domain = process.env.PORTAL
 const force = process.env.FORCE === '1'
 const ids = (process.env.TASKS || '').split(',').map((s) => s.trim()).filter(Boolean)
-const u = new URL(process.env.REDIS_URL)
+// ⚠ Читаем не только хост и порт: пароль, пользователя и номер базы из REDIS_URL
+// прежние версии молча отбрасывали — в день, когда Redis закроют паролем, цель умерла
+// бы с NOAUTH ровно тогда, когда она нужна. Найдено вторым циклом панели.
+let u
+try {
+  u = new URL(process.env.REDIS_URL)
+} catch {
+  console.error('REDIS_URL не разбирается как URL — смотрите .env (значение не печатаем: в нём пароль)')
+  process.exit(1)
+}
+const connection = {
+  host: u.hostname,
+  port: Number(u.port || 6379),
+  username: decodeURIComponent(u.username) || undefined,
+  password: decodeURIComponent(u.password) || undefined,
+  db: Number(u.pathname.slice(1) || 0),
+  maxRetriesPerRequest: null,
+}
 
-const queue = new Queue('task-events', {
-  connection: { host: u.hostname, port: Number(u.port || 6379), maxRetriesPerRequest: null },
-  prefix: 'bull',
-})
+const queue = new Queue('task-events', { connection, prefix: 'bull' })
 
 let queued = 0
 let skipped = 0
@@ -354,9 +379,9 @@ for (const id of ids) {
 
   const key = domain + '--' + id
   // ⚠ getJob НЕ видит задание, которое уже выполнено и вычищено по removeOnComplete.
-  // Это не дыра: от повторного переноса защищает журнал переносов (claim не занимает
-  // строку, у которой уже есть target_task_id). Здесь — только вежливость к оператору,
-  // чтобы не ставить заново то, что прямо сейчас в работе.
+  // Это не дыра: от повторного переноса защищает сам обработчик — он спрашивает наш
+  // портал по UF-полям задачи, переносилась ли она уже. Здесь — только вежливость к
+  // оператору, чтобы не ставить заново то, что прямо сейчас в работе.
   const known = await queue.getJob(key)
   if (known) {
     const state = await known.getState()
@@ -395,9 +420,87 @@ for (const id of ids) {
 }
 
 await queue.close()
-console.log('итого: поставлено ' + queued + ', пропущено ' + skipped + '. Смотреть: make transfers')
+console.log('итого: поставлено ' + queued + ', пропущено ' + skipped + '. Смотреть: make queue')
 endef
 export BACKFILL_JS
+
+# ⚠ Те же правила, что у BACKFILL_JS: внутри блока НЕ используйте `$` — make развернёт
+# его как свою переменную, и в контейнер уедет искажённый скрипт.
+#
+# ⚠ Скрипт уезжает в `node` по stdin, и `await` на верхнем уровне работает только потому,
+# что Node 22 определяет такой ввод как ESM. Сменится базовый образ — отвалится молча,
+# с синтаксической ошибкой про `await`.
+define QUEUE_JS
+const BULLMQ = '/app/.output/server/node_modules/bullmq/dist/cjs/index.js'
+let Queue
+try {
+  ;({ Queue } = await import(BULLMQ))
+} catch {
+  console.error('не найден bullmq по пути ' + BULLMQ + ' — изменилась раскладка образа')
+  process.exit(1)
+}
+
+// ⚠ Разбор строки подключения — под своим сообщением: Node на кривом URL печатает
+// свойство input, то есть в терминал уехала бы вся строка вместе с паролем Redis.
+// ⚠ И читаем ВСЕ части, включая пароль и номер базы: иначе цель умрёт с NOAUTH в тот
+// день, когда Redis закроют паролем. Оба хвоста найдены панелью.
+let u
+try {
+  u = new URL(process.env.REDIS_URL)
+} catch {
+  console.error('REDIS_URL не разбирается как URL — смотрите .env (значение не печатаем: в нём пароль)')
+  process.exit(1)
+}
+const connection = {
+  host: u.hostname,
+  port: Number(u.port || 6379),
+  username: decodeURIComponent(u.username) || undefined,
+  password: decodeURIComponent(u.password) || undefined,
+  db: Number(u.pathname.slice(1) || 0),
+  maxRetriesPerRequest: null,
+}
+const queue = new Queue('task-events', { connection, prefix: 'bull' })
+const notify = new Queue('notifications', { connection, prefix: 'bull' })
+
+// ⚠ `paused` показываем обязательно: у приостановленной очереди ждёт 0 и в работе 0,
+// и оператор прочитает это как «всё спокойно», хотя стоит всё. Найдено панелью.
+const counts = await queue.getJobCounts('waiting', 'active', 'delayed', 'failed', 'completed', 'paused')
+console.log('очередь переносов: ждёт ' + counts.waiting + ', в работе ' + counts.active
+  + ', отложено ' + counts.delayed + ', упало ' + counts.failed + ', готово ' + counts.completed
+  + (counts.paused ? ', ПРИОСТАНОВЛЕНО ' + counts.paused : ''))
+
+// ⚠ И вторая очередь тоже: «задача переехала, а сообщение не ушло» иначе снова
+// становится невидимым — журнала, где это было видно, больше нет. Найдено панелью.
+const nc = await notify.getJobCounts('waiting', 'active', 'failed', 'paused')
+console.log('очередь уведомлений: ждёт ' + nc.waiting + ', в работе ' + nc.active
+  + ', упало ' + nc.failed + (nc.paused ? ', ПРИОСТАНОВЛЕНО ' + nc.paused : ''))
+
+// ⚠ Упавшие показываем с причиной: ради этого цель и существует. Хранилища отказов
+// нет, и очередь — единственное место, где видно «не доехало и вот почему».
+const failed = await queue.getFailed(0, 19)
+if (failed.length === 0) {
+  console.log('упавших заданий нет')
+} else {
+  console.log('последние упавшие (до 20):')
+  for (const job of failed) {
+    // ⚠ Причина приходит из текста исключения, а туда при неудачном стечении может
+    // попасть адрес вебхука — вместе с токеном в пути. Режем его до /rest/…/ прежде
+    // чем печатать: терминал оператора и так на виду, а failed-задания живут в Redis.
+    const line = String(job.failedReason || '').split('\n')[0]
+      .replace(/https:\/\/[^\s]*\/rest\/[^\s]*/g, 'https://…/rest/…/')
+    // ⚠ `attemptsMade` — число УЖЕ провалившихся попыток, поэтому печатаем «из N»:
+    // иначе строка читается как «осталось». Предел берём из самого задания, а не
+    // числом в тексте: в коде он живёт в TASK_JOB_OPTIONS и когда-нибудь изменится.
+    const limit = (job.opts && job.opts.attempts) || '?'
+    console.log('  ' + job.id + '  попыток ' + job.attemptsMade + ' из ' + limit + '  ' + line)
+  }
+  console.log('дослать вручную: PORTAL=… TASKS=… FORCE=1 make backfill')
+}
+
+await queue.close()
+await notify.close()
+endef
+export QUEUE_JS
 
 ## Выгрузить задачи клиента в issue его репозитория: PORTAL=… [LIMIT=50] make issues
 #

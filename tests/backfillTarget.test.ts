@@ -17,11 +17,15 @@ import { QUEUE_PREFIX, TASK_EVENTS_QUEUE, TASK_JOB_OPTIONS, jobId } from '../src
 
 const MAKEFILE = readFileSync(join(import.meta.dirname, '..', 'Makefile'), 'utf8')
 
-/** Тело `define BACKFILL_JS … endef` — тот текст, который уезжает в контейнер. */
-function backfillScript(): string {
-  const match = /^define BACKFILL_JS$(.*?)^endef$/ms.exec(MAKEFILE)
-  if (!match) throw new Error('в Makefile не найден блок define BACKFILL_JS')
+/** Тело `define ИМЯ … endef` — тот текст, который уезжает в контейнер. */
+function makeScript(name: string): string {
+  const match = new RegExp(String.raw`^define ${name}$(.*?)^endef$`, 'ms').exec(MAKEFILE)
+  if (!match) throw new Error(`в Makefile не найден блок define ${name}`)
   return match[1]!
+}
+
+function backfillScript(): string {
+  return makeScript('BACKFILL_JS')
 }
 
 describe('цель make backfill', () => {
@@ -105,5 +109,30 @@ describe('цель make backfill', () => {
     })
     expect(dry).toContain('docker compose')
     expect(dry).toContain('app node')
+  })
+})
+
+/**
+ * Цель `make queue` — замена прежней `make transfers`. Журнала переносов нет, и очередь
+ * осталась единственным местом, где видно «не доехало и вот почему».
+ *
+ * ⚠ Она дублирует имя очереди и префикс ключей ровно так же, как `backfill`, и по той
+ * же причине (на сервере нет исходников). Значит и стеречь её надо так же: смотреть
+ * будут не в ту очередь — и оператор увидит вечное «упавших заданий нет».
+ */
+describe('цель make queue', () => {
+  const script = makeScript('QUEUE_JS')
+
+  it('смотрит в ту же очередь, что и обработчик события', () => {
+    expect(script).toContain(`'${TASK_EVENTS_QUEUE}'`)
+  })
+
+  it('смотрит в то же пространство ключей Redis', () => {
+    expect(script).toContain(`prefix: '${QUEUE_PREFIX}'`)
+  })
+
+  it('показывает упавшие задания с причиной, а не только счётчик', () => {
+    expect(script).toContain('getFailed')
+    expect(script).toContain('failedReason')
   })
 })

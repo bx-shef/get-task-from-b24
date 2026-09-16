@@ -1,6 +1,18 @@
 import { describe, expect, it, vi } from 'vitest'
 import { UnrecoverableError } from 'bullmq'
-import { buildTransferSettings, isFinalFailure, log, toQueueError } from '../src/queue/workers.js'
+
+// ⚠ Подменяем вызовы портала целиком: проверяем ШОВ (куда и с чем уходит вызов), а не
+// сам вызов — он проверен в tests/transferLookup.test.ts.
+vi.mock('../src/b24/tasks.js', () => ({
+  createTargetTask: vi.fn(async () => 42),
+  deleteTargetTask: vi.fn(async () => {}),
+  fetchSourceTask: vi.fn(),
+  fetchUserName: vi.fn(),
+  findTransferredTasks: vi.fn(async () => []),
+}))
+
+import { createTargetTask, deleteTargetTask, findTransferredTasks } from '../src/b24/tasks.js'
+import { buildTransferDeps, buildTransferSettings, isFinalFailure, log, toQueueError } from '../src/queue/workers.js'
 import { B24Error } from '../src/b24/errors.js'
 
 const job = (attemptsMade: number) => ({ attemptsMade, opts: { attempts: 5 } })
@@ -44,6 +56,10 @@ describe('buildTransferSettings', () => {
     titlePrefix: '#support',
     defaultDeadlineHours: 12,
     targetSourceTaskField: 'UF_SOURCE_TASK_ID',
+    // ⚠ Домен обязан быть в фикстуре: без него `toEqual` игнорировал ключ со значением
+    // `undefined`, и тест «переносит всё, что влияет на задачу» домен НЕ проверял —
+    // шов стерёг только тип. Найдено панелью.
+    targetSourceDomainField: 'UF_SOURCE_DOMAIN',
   } as never
   const portal = { domain: 'c.ru', responsibleId: 17, clientId: 'a', clientSecret: 'b', groupId: 42 }
 
@@ -57,7 +73,62 @@ describe('buildTransferSettings', () => {
       titlePrefix: '#support',
       defaultDeadlineHours: 12,
       sourceTaskField: 'UF_SOURCE_TASK_ID',
+      sourceDomainField: 'UF_SOURCE_DOMAIN',
     })
+  })
+})
+
+/**
+ * Второй шов того же рода — сборка побочных эффектов. Изнутри воркера её не проверить,
+ * а ошибка здесь тихая и дорогая: промах адресом означает поиск дублей и УДАЛЕНИЕ задач
+ * на чужом портале, а разъехавшиеся коды полей — дубль на каждом событии. Найдено
+ * панелью.
+ */
+describe('buildTransferDeps', () => {
+  const ctx = {
+    config: {
+      targetWebhookUrl: 'https://our.example/rest/1/hook/',
+      targetSourceTaskField: 'UF_SOURCE_TASK_ID',
+      targetSourceDomainField: 'UF_SOURCE_DOMAIN',
+      tokenEncKey: '0'.repeat(64),
+    },
+    pool: {},
+    queues: { notifications: { add: vi.fn(async () => {}) } },
+  } as never
+  const portal = { domain: 'c.ru', responsibleId: 17, clientId: 'a', clientSecret: 'b', groupId: 42 }
+
+  it('поиск дублей и удаление идут на НАШ портал и с теми же кодами полей', async () => {
+    const deps = buildTransferDeps(ctx, portal)
+
+    await deps.findTransferred('c.ru', 555)
+    expect(findTransferredTasks).toHaveBeenCalledWith('https://our.example/rest/1/hook/', {
+      sourceDomain: 'c.ru',
+      sourceTaskId: 555,
+      sourceTaskField: 'UF_SOURCE_TASK_ID',
+      sourceDomainField: 'UF_SOURCE_DOMAIN',
+    })
+
+    await deps.deleteTask(42)
+    expect(deleteTargetTask).toHaveBeenCalledWith('https://our.example/rest/1/hook/', 42)
+  })
+
+  // ⚠ Создание — тот же шов и та же цена: промах адресом означает задачу на чужом
+  // портале, а у нас её нет — и дедупликация её потом не найдёт, заводя ещё и ещё.
+  // Найдено вторым циклом панели.
+  it('задача создаётся на НАШЕМ портале', async () => {
+    const deps = buildTransferDeps(ctx, portal)
+    await deps.createTask({ TITLE: 'x' } as never)
+    expect(createTargetTask).toHaveBeenCalledWith('https://our.example/rest/1/hook/', { TITLE: 'x' })
+  })
+
+  // ⚠ Потеря уведомления молчалива по своей природе: задача переехала, а человек не
+  // узнал. Проверяем, что текст доезжает до очереди уведомлений.
+  it('уведомление кладётся в очередь уведомлений вместе с текстом', async () => {
+    const deps = buildTransferDeps(ctx, portal)
+    await deps.notify('привет')
+    const add = (ctx as unknown as { queues: { notifications: { add: ReturnType<typeof vi.fn> } } })
+      .queues.notifications.add
+    expect(add).toHaveBeenCalledWith('notify', { text: 'привет' }, expect.anything())
   })
 })
 
