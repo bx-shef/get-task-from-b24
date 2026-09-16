@@ -53,7 +53,13 @@ describe('withPortalAuth', () => {
     const fn = vi.fn(async () => 'ok')
 
     expect(await withPortalAuth(access, portal, fn)).toBe('ok')
-    expect(fn).toHaveBeenCalledWith({ accessToken: 'at-1', clientEndpoint: 'https://client.bitrix24.ru/rest/' })
+    // ⚠ Срок жизни едет вместе с токеном — по нему SDK решает, отправлять ли запрос
+    // вообще. Без него ни один вызов портала не уходил в сеть (авария 2026-09-16).
+    expect(fn).toHaveBeenCalledWith({
+      accessToken: 'at-1',
+      clientEndpoint: 'https://client.bitrix24.ru/rest/',
+      expiresAt: expect.any(Date),
+    })
     expect(refreshTokens).not.toHaveBeenCalled()
   })
 
@@ -64,7 +70,7 @@ describe('withPortalAuth', () => {
     const fn = vi.fn(async () => 'ok')
 
     await withPortalAuth(access, portal, fn)
-    expect(fn).toHaveBeenCalledWith(expect.objectContaining({ accessToken: 'at-2' }))
+    expect(fn).toHaveBeenCalledWith(expect.objectContaining({ accessToken: 'at-2', expiresAt }))
     // ⚠ Проверяем аргументы, а не факт вызова: ревью показало мутацией, что запись
     // ПОТРАЧЕННОГО refresh-токена в базу оставляла все тесты зелёными. До перезапуска
     // всё работает, после — портал не продлевается, и ошибка звучит как «клиенту надо

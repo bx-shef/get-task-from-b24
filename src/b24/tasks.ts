@@ -3,13 +3,18 @@
  * Разборщики — чистые функции: именно они ломаются молча при смене формата ответа.
  */
 import { callPortal, callWebhook } from './rest.js'
+import type { PortalClientAuth } from './sdk.js'
 import { B24Error } from './errors.js'
 import type { SourceTaskFull, TargetTaskFields } from '../domain/taskMapping.js'
 import { portalRestUrl } from '../domain/portals.js'
 import { taskListRows, ufValues } from './taskRows.js'
-import type { PortalAuth } from '../store/portalTokens.js'
 
-type Auth = Pick<PortalAuth, 'accessToken' | 'clientEndpoint'>
+/**
+ * ⚠ Берём тип из `sdk.ts`, а не объявляем свой такой же: три структурно одинаковых
+ * описания одного доступа разъехались бы молча — TypeScript совпадение по форме не
+ * оспаривает. «Один факт — одно место» (CLAUDE.md).
+ */
+type Auth = PortalClientAuth
 
 /** Поля задачи метод отдаёт в camelCase, но исторически встречается и ВЕРХНИЙ_РЕГИСТР. */
 function pick(raw: Record<string, unknown>, ...keys: string[]): unknown {
@@ -148,9 +153,13 @@ export async function createTargetTask(webhookUrl: string, fields: TargetTaskFie
  * ⚠ Адрес вызова строится ИЗ ДОМЕНА РЕЕСТРА, а не из тела запроса. Подделать ответ
  * можно только владея самим порталом — а это и есть то, что мы проверяем.
  */
-export async function verifyPortalToken(domain: string, accessToken: string): Promise<{ code?: string }> {
+export async function verifyPortalToken(
+  domain: string,
+  accessToken: string,
+  expiresAt: Date,
+): Promise<{ code?: string }> {
   const info = await callPortal<{ CODE?: string; code?: string }>(
-    { accessToken, clientEndpoint: portalRestUrl(domain) },
+    { accessToken, clientEndpoint: portalRestUrl(domain), expiresAt },
     'app.info',
     {},
   )

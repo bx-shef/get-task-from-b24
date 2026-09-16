@@ -6,6 +6,13 @@
  * ⚠ Тест написан по боевому инциденту 2026-09-15 (разбор — в `docs/WORKLOG.md`): SDK
  * заворачивает ЛЮБОЕ не-axios исключение из обработчика продления в свою `AjaxError` с
  * кодом `JSSDK_UNKNOWN_ERROR`, и наш код переставал узнавать `expired_token`.
+ *
+ * ⚠⚠ И он же — пример теста, который проходил по НЕВЕРНОЙ причине. Токену не давали
+ * срока жизни, SDK считал его протухшим и бросал `expired_token`, НЕ ОТПРАВИВ запрос;
+ * тест видел нужный код ошибки и был зелёным, а сервис в это время не мог позвать
+ * портал вообще (боевая авария 2026-09-16). Поэтому здесь теперь считаются ЗАПРОСЫ,
+ * дошедшие до портала: утверждение «ошибка пришла от портала» без этого счётчика
+ * ничего не значит.
  */
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -23,7 +30,9 @@ afterEach(async () => {
 
 describe('портал отвечает «токен протух»', () => {
   it('код expired_token доезжает до слоя продления, а не тонет в обёртке SDK', async () => {
+    let requests = 0
     server = createServer((_req, res) => {
+      requests++
       res.writeHead(401, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ error: 'expired_token', error_description: 'The access token provided has expired' }))
     })
@@ -31,11 +40,41 @@ describe('портал отвечает «токен протух»', () => {
     const { port } = server!.address() as AddressInfo
 
     const client = createPortalClient({
-      accessToken: 'протухший',
+      accessToken: 'по нашим данным живой',
       clientEndpoint: `http://127.0.0.1:${port}/rest/`,
+      expiresAt: new Date(Date.now() + 3_600_000),
     })
 
     await expect(callSdk(client, 'tasks.task.get', { taskId: 1 })).rejects.toMatchObject({ code: 'expired_token' })
+    // ⚠ Вот ради этой строки тест переписан: ошибка обязана прийти ОТ ПОРТАЛА.
+    expect(requests).toBeGreaterThan(0)
+  }, 30_000)
+
+  // ⚠ Прямой замер аварии 2026-09-16: обычный вызов с живым токеном обязан дойти до
+  // портала и вернуть ответ. Раньше он не отправлялся вовсе — запросов было ноль.
+  it('вызов с живым токеном доходит до портала и возвращает ответ', async () => {
+    let requests = 0
+    server = createServer((_req, res) => {
+      requests++
+      res.writeHead(200, { 'content-type': 'application/json' })
+      // Блок `time` — как у настоящего портала: SDK читает из него счётчик нагрузки,
+      // и без него разбор ответа падает.
+      res.end(JSON.stringify({
+        result: { task: { id: 1 } },
+        time: { start: 0, finish: 0, duration: 0, processing: 0, date_start: '', date_finish: '', operating_reset_at: 0, operating: 0 },
+      }))
+    })
+    await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve))
+    const { port } = server!.address() as AddressInfo
+
+    const client = createPortalClient({
+      accessToken: 'живой',
+      clientEndpoint: `http://127.0.0.1:${port}/rest/`,
+      expiresAt: new Date(Date.now() + 3_600_000),
+    })
+
+    await expect(callSdk(client, 'tasks.task.get', { taskId: 1 })).resolves.toMatchObject({ task: { id: 1 } })
+    expect(requests).toBe(1)
   }, 30_000)
 
   it('обёртка JSSDK_UNKNOWN_ERROR разворачивается в исходную ошибку', () => {

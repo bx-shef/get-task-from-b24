@@ -21,10 +21,20 @@ import { DEFAULT_OAUTH_ENDPOINT } from './oauthHosts.js'
 
 const TIMEOUT_MS = 20_000
 
-/** Что нужно, чтобы позвать метод на портале клиента: токен и его адрес REST. */
-export interface PortalAuth {
+/**
+ * Что нужно, чтобы позвать метод на портале клиента: токен, адрес REST и **срок жизни
+ * токена**.
+ *
+ * ⚠ Срок здесь не для отчётности. SDK сам решает, жив ли токен, и при просроченном
+ * идёт продлевать ДО отправки запроса; продление у нас запрещено намеренно, поэтому
+ * неверный срок означает не лишний поход в сеть, а вызов, который не состоится вовсе.
+ * Боевая авария 2026-09-16 — ровно это.
+ */
+export interface PortalClientAuth {
   accessToken: string
   clientEndpoint: string
+  /** Когда протухает `accessToken`. Берётся из хранилища, а не выдумывается. */
+  expiresAt: Date
 }
 
 /**
@@ -63,7 +73,7 @@ export function createHookClient(webhookUrl: string): TypeB24 {
  * в `withPortalAuth`, под advisory-lock и с записью результата, а SDK получает
  * обработчик, который честно говорит «протух» и отдаёт решение слою выше.
  */
-export function createPortalClient(auth: PortalAuth): TypeB24 {
+export function createPortalClient(auth: PortalClientAuth): TypeB24 {
   const endpoint = auth.clientEndpoint.replace(/\/+$/, '')
   const domain = new URL(endpoint).host
 
@@ -78,8 +88,13 @@ export function createPortalClient(auth: PortalAuth): TypeB24 {
       userId: 0,
       scope: '',
       status: 'L',
-      expires: 0,
-      expiresIn: 0,
+      // ⚠ Реальный срок жизни токена, а НЕ ноль. Ноль стоил боевой аварии 2026-09-16:
+      // SDK сам решает, жив ли токен, — `getAuthData()` возвращает `false`, когда
+      // `expires` в прошлом, и тогда он идёт продлевать ДО всякого запроса. Продление
+      // у нас запрещено (см. ниже), значит вызов падал «токен протух», НЕ ДОЙДЯ до
+      // портала ни разу. Замерено: запросов до портала — ноль.
+      expires: Math.floor(auth.expiresAt.getTime() / 1000),
+      expiresIn: Math.max(0, Math.floor((auth.expiresAt.getTime() - Date.now()) / 1000)),
       domain,
       memberId: '',
       clientEndpoint: endpoint + '/',
