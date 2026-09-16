@@ -3,12 +3,17 @@
  * Разборщики — чистые функции: именно они ломаются молча при смене формата ответа.
  */
 import { callPortal, callWebhook } from './rest.js'
+import type { PortalClientAuth } from './sdk.js'
 import { B24Error } from './errors.js'
 import type { SourceTaskFull, TargetTaskFields } from '../domain/taskMapping.js'
 import { portalRestUrl } from '../domain/portals.js'
-import type { PortalAuth } from '../store/portalTokens.js'
 
-type Auth = Pick<PortalAuth, 'accessToken' | 'clientEndpoint'> & { expiresAt: Date }
+/**
+ * ⚠ Берём тип из `sdk.ts`, а не объявляем свой такой же: три структурно одинаковых
+ * описания одного доступа разъехались бы молча — TypeScript совпадение по форме не
+ * оспаривает. «Один факт — одно место» (CLAUDE.md).
+ */
+type Auth = PortalClientAuth
 
 /** Поля задачи метод отдаёт в camelCase, но исторически встречается и ВЕРХНИЙ_РЕГИСТР. */
 function pick(raw: Record<string, unknown>, ...keys: string[]): unknown {
