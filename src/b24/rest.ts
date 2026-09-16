@@ -4,9 +4,8 @@
  */
 import { B24Error, isRetryable } from './errors.js'
 import { DEFAULT_OAUTH_ENDPOINT, isKnownOauthHost, tokenEndpoint } from './oauthHosts.js'
-import { callSdk, callSdkV3, createHookClient, createPortalClient } from './sdk.js'
+import { callSdk, callSdkV3, createHookClient, createPortalClient, type PortalClientAuth } from './sdk.js'
 import type { TypeB24 } from '@bitrix24/b24jssdk'
-import type { PortalAuth } from '../store/portalTokens.js'
 
 // ⚠ Переэкспорт ради тех, кто уже импортирует это отсюда (обработчик установки):
 // один факт — одно место, но и ломать чужие импорты ради переезда незачем.
@@ -48,7 +47,7 @@ export function callWebhookV3<T>(webhookUrl: string, method: string, params: Rec
  * сам токен — то есть кэш рос бы и хранил протухшее.
  */
 export function callPortal<T>(
-  auth: Pick<PortalAuth, 'accessToken' | 'clientEndpoint'>,
+  auth: PortalClientAuth,
   method: string,
   params: Record<string, unknown>,
 ): Promise<T> {
