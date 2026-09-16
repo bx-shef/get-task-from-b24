@@ -99,6 +99,38 @@ export async function markTaskExported(
   // ⚠ И `taskId`, и `id`: документация метода называет обязательными оба, и портал
   // принимает запрос только когда они есть (тот же приём, что в `tasks.task.get`).
   await callWebhook(webhookUrl, 'tasks.task.update', { taskId, id: taskId, fields: { [field]: value } })
+
+  // ⚠ Перечитываем и сверяем. Отсутствие ошибки успехом НЕ считается: неизвестный ключ
+  // в `fields` Битрикс24 молча проглатывает — запрос принят, поле пустое. Замерено на
+  // боевом 2026-09-16: issue создан, отметка не легла, и следующий прогон завёл бы
+  // второй issue в приватном репозитории клиента. Цена перепроверки — один вызов,
+  // цена ошибки — дубль, который не отзывается.
+  //
+  // ⚠ `select` здесь обязателен, в отличие от `fetchSourceTask`: UF-поля в базовый
+  // набор ответа не входят, и без него сверять было бы нечего — пусто у всех подряд.
+  const check = await callWebhook<unknown>(webhookUrl, 'tasks.task.get', {
+    taskId,
+    id: taskId,
+    select: ['ID', field],
+  })
+
+  const stored = ufValue(unwrapTaskLike(check), field)
+  if (stored.trim() !== value.trim()) {
+    throw new B24Error(
+      `портал принял запись, но поле ${field} у задачи ${taskId} осталось `
+      + `${stored.trim() === '' ? 'пустым' : `со значением «${stored.trim()}»`}. `
+      + 'Скорее всего, код поля в B24_TARGET_UF_ISSUE не совпадает с порталом',
+      'MARK_NOT_STORED',
+      false,
+    )
+  }
+}
+
+/** Ответ `tasks.task.get` — `{ task: {...} }`, но встречается и голый объект. */
+function unwrapTaskLike(result: unknown): TaskRow {
+  const wrapper = result as { task?: unknown; item?: unknown } | null | undefined
+  const task = wrapper?.task ?? wrapper?.item ?? result
+  return (typeof task === 'object' && task !== null ? task : {}) as TaskRow
 }
 
 /**
