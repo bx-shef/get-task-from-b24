@@ -76,11 +76,16 @@ export default defineEventHandler(async (event) => {
     return rejected
   }
 
+  // ⚠ Срок жизни токена считаем ОДИН раз и используем везде: он едет вместе с токеном
+  // в каждый вызов портала, потому что по нему SDK решает, отправлять запрос или сразу
+  // идти продлевать (боевая авария 2026-09-16).
+  const tokenExpiresAt = new Date(Date.now() + parsed.expiresIn * 1000)
+
   // ⚠ Доказательство подлинности: вызов уходит на адрес ИЗ РЕЕСТРА. Подделать ответ
   // может только тот, кто владеет самим порталом.
   let appCode: string | undefined
   try {
-    appCode = (await verifyPortalToken(portal.domain, parsed.accessToken)).code
+    appCode = (await verifyPortalToken(portal.domain, parsed.accessToken, tokenExpiresAt)).code
   } catch (error) {
     log('install-token-rejected', { domain: portal.domain, reason: (error as Error).message })
     event.node.res.statusCode = 403
@@ -138,7 +143,7 @@ export default defineEventHandler(async (event) => {
         clientEndpoint: portalRestUrl(portal.domain),
         serverEndpoint,
       },
-      expiresAt: new Date(Date.now() + parsed.expiresIn * 1000),
+      expiresAt: tokenExpiresAt,
     },
     config.tokenEncKey,
   )
@@ -146,7 +151,7 @@ export default defineEventHandler(async (event) => {
   const handlerUrl = `${config.publicBaseUrl}/b24/handler`
   try {
     await bindAppEvents(
-      { accessToken: parsed.accessToken, clientEndpoint: portalRestUrl(portal.domain) },
+      { accessToken: parsed.accessToken, clientEndpoint: portalRestUrl(portal.domain), expiresAt: tokenExpiresAt },
       handlerUrl,
     )
     log('installed', { domain: portal.domain, handler: handlerUrl })

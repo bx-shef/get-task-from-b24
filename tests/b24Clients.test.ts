@@ -24,12 +24,32 @@ describe('клиент нашего портала', () => {
 })
 
 describe('клиент портала клиента', () => {
-  const auth = { accessToken: 'at-1', clientEndpoint: 'https://portal.example.by/rest/' }
+  const auth = {
+    accessToken: 'at-1',
+    clientEndpoint: 'https://portal.example.by/rest/',
+    expiresAt: new Date(Date.now() + 3_600_000),
+  }
 
   it('строится из токена и адреса и защищён', () => {
     const client = createPortalClient(auth)
     expect(client.getHttpClient('v2' as never).ajaxClient.defaults.maxRedirects).toBe(0)
     expect(client.getHttpClient('v2' as never).ajaxClient.defaults.timeout).toBe(20_000)
+  })
+
+  // ⚠ Написано по боевой аварии 2026-09-16. SDK сам решает, жив ли токен: его
+  // `getAuthData()` возвращает `false`, когда `expires` в прошлом, и тогда он идёт
+  // продлевать ДО отправки запроса. Мы отдавали `expires: 0` — то есть «протух
+  // всегда», — и каждый вызов портала падал, не дойдя до сети ни разу.
+  it('срок жизни токена доезжает до SDK, иначе запрос не отправится вовсе', () => {
+    const client = createPortalClient(auth)
+    const data = client.auth.getAuthData()
+    expect(data).not.toBe(false)
+    expect((data as { access_token: string }).access_token).toBe('at-1')
+  })
+
+  it('протухший токен SDK и считает протухшим — это вход в продление', () => {
+    const client = createPortalClient({ ...auth, expiresAt: new Date(Date.now() - 1000) })
+    expect(client.auth.getAuthData()).toBe(false)
   })
 
   it('сам не продлевает токен, а сообщает «протух»', async () => {

@@ -8,7 +8,12 @@ import { getPortal, updateAuth, type PortalAuth } from '../store/portalTokens.js
 import type { PortalConfig } from '../domain/portals.js'
 import { withAdvisoryLock, type Pool } from '../store/db.js'
 
-export type Auth = Pick<PortalAuth, 'accessToken' | 'clientEndpoint'>
+/**
+ * ⚠ Срок жизни токена — часть доступа, а не справочная информация: по нему SDK решает,
+ * отправлять запрос или сразу идти продлевать (боевая авария 2026-09-16). Поэтому он
+ * ездит вместе с токеном везде, где токен используется.
+ */
+export type Auth = Pick<PortalAuth, 'accessToken' | 'clientEndpoint'> & { expiresAt: Date }
 
 /** Токены плюс срок их жизни: срок нужен, чтобы отличить «свежее» от «устаревшего». */
 type LiveAuth = PortalAuth & { expiresAt: Date }
@@ -76,13 +81,21 @@ export async function withPortalAuth<T>(
   }
 
   try {
-    return await fn({ accessToken: current.accessToken, clientEndpoint: current.clientEndpoint })
+    return await fn({
+      accessToken: current.accessToken,
+      clientEndpoint: current.clientEndpoint,
+      expiresAt: current.expiresAt,
+    })
   } catch (error) {
     // ⚠ Ровно одна повторная попытка: портал мог отозвать токен раньше срока, но
     // бесконечный цикл «протух → продлили → протух» здесь недопустим.
     if (error instanceof B24Error && EXPIRED_TOKEN_CODES.has(error.code)) {
       const refreshed = await refreshAndStore(access, portal, current)
-      return await fn({ accessToken: refreshed.accessToken, clientEndpoint: refreshed.clientEndpoint })
+      return await fn({
+        accessToken: refreshed.accessToken,
+        clientEndpoint: refreshed.clientEndpoint,
+        expiresAt: refreshed.expiresAt,
+      })
     }
     throw error
   }
